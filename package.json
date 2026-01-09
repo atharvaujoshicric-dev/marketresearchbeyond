@@ -1,0 +1,17 @@
+{
+  "name": "netlify-excel-cre-processor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "echo \"No build step\"",
+    "start": "netlify dev"
+  },
+  "dependencies": {
+    "exceljs": "^4.3.0",
+    "busboy": "^1.6.0"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.0.0"
+  }
+}
