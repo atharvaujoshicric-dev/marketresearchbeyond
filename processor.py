@@ -5,12 +5,12 @@ from openpyxl.styles import Alignment, PatternFill, Border, Side
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
-    # 1. Cleanup: normalize spaces and remove commas in numbers
+    # Cleanup: normalize spaces and remove commas in numbers (e.g., 13,600 -> 13600)
     text = " ".join(str(text).split())
     text = re.sub(r'(\d),(\d)', r'\1\2', text)
     text = text.replace(' ,', ',').replace(', ', ',')
     
-    # 2. Focus Logic: Jump past land survey details
+    # Focus Logic: Jump past land survey details to unit details
     focus_keywords = r'(?:इमारतीमधील|अपार्टमेंटमधील|सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
@@ -21,7 +21,7 @@ def extract_area_logic(text):
     total_keywords = r'(?:ए[ककु]ण\s*क्षेत्र|क्षेत्रफळ|total\s*area|सेलेबल\s*क्षेत्र|एकूण\s*सेलेबल)'
     parking_keywords = ["पार्किंग", "पार्कींग", "parking", "पार्कीग", "पार्किंगसह", "कार पार्क"]
 
-    # --- METRIC SUMMATION ---
+    # METRIC SUMMATION (Collecting all components for duplexes/luxury units)
     m_segments = re.split(f'(\d+\.?\d*)\s*{m_unit}', relevant_text, flags=re.IGNORECASE)
     m_vals = []
     for i in range(1, len(m_segments), 2):
@@ -31,11 +31,12 @@ def extract_area_logic(text):
             m_vals.append(val)
     
     if m_vals:
+        # Avoid double-counting if the final number is the sum of previous ones
         if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 1.0:
             return round(m_vals[-1], 3)
         return round(sum(m_vals), 3)
 
-    # --- IMPERIAL FALLBACK ---
+    # IMPERIAL FALLBACK
     f_segments = re.split(f'(\d+\.?\d*)\s*{f_unit}', relevant_text, flags=re.IGNORECASE)
     f_vals = []
     for i in range(1, len(f_segments), 2):
