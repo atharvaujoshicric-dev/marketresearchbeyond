@@ -4,8 +4,8 @@ import os
 def send_analysis_email(recipient_email, excel_data, filename):
     # Replace with your Gmail and an "App Password" 
     # (Generated in Google Account > Security > 2-Step Verification > App Passwords)
-    SENDER_EMAIL = "your-email@gmail.com"
-    SENDER_PASSWORD = "your-app-password" 
+    SENDER_EMAIL = "atharvaujoshi@gmail.com"
+    SENDER_PASSWORD = "nybl zsnx zvdw edqr" 
 
     try:
         yag = yagmail.SMTP(SENDER_EMAIL, SENDER_PASSWORD)
