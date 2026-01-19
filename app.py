@@ -12,7 +12,7 @@ from openpyxl.styles import Alignment, PatternFill, Border, Side
 
 # --- EMAIL CONFIGURATION ---
 SENDER_EMAIL = "atharvaujoshi@gmail.com"
-SENDER_NAME = "Property Market Research" # Adding a name helps avoid Spam filters
+SENDER_NAME = "Spydarr Market Research" # Adding a name helps avoid Spam filters
 APP_PASSWORD = "nybl zsnx zvdw edqr"
 
 def send_email(recipient_email, excel_data, filename):
