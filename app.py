@@ -32,7 +32,7 @@ def send_email(recipient_email, excel_data, filename):
         2. A summarized view of APR statistics across properties.
 
         Regards,
-        Real Estate Dashboard Team
+        Atharva Joshi
         """
         msg.attach(MIMEText(body, 'plain'))
 
