@@ -135,7 +135,13 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
 
 st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
-st.markdown("<small>**NOTE :-** Please cross-check the report manually.</small>", unsafe_allow_html=True)
+st.markdown("""
+    <div style='margin-top: -15px; margin-bottom: 10px;'>
+        <span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
+            <u><strong>NOTE :-</strong> Please cross check the sheet.</u>
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
 st.divider()
 st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
