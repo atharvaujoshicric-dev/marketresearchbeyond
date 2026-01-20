@@ -15,10 +15,6 @@ SENDER_EMAIL = "atharvaujoshi@gmail.com"
 SENDER_NAME = "Spydarr Market Research" 
 APP_PASSWORD = "nybl zsnx zvdw edqr"
 
-# --- AUTHORIZED USERS LIST ---
-# Add the known prefixes of your team here to prevent "Ghost" sends
-AUTHORIZED_USERS = ["atharva.joshi", "admin", "test.user"] 
-
 def send_email(recipient_email, excel_data, filename):
     try:
         recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
@@ -48,23 +44,89 @@ Atharva Joshi"""
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(SENDER_EMAIL, APP_PASSWORD)
-        
-        # This will fail if the recipient is invalid according to the mail server
         server.send_message(msg)
         server.quit()
-        return True, "Success"
-    except smtplib.SMTPRecipientsRefused:
-        return False, "The recipient address was rejected."
+        return True
     except Exception as e:
-        return False, str(e)
+        st.error(f"Error sending email: {e}")
+        return False
 
-# ... (Previous extraction logic remains the same) ...
+# ... (Previous extract_area_logic, determine_config, and apply_excel_formatting) ...
+def extract_area_logic(text):
+    if pd.isna(text) or text == "": return 0.0
+    text = " ".join(str(text).split())
+    m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
+    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवरील", "एकूण क्षेत्र"]
+    include_keywords = ["फ्लॅट", "सदनिका", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट"]
+    m_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
+        val = float(match.group(1))
+        context_before = text[max(0, match.start()-60):match.start()].lower()
+        is_excluded = any(word in context_before for word in exclude_keywords)
+        is_flat_specific = any(word in context_before for word in include_keywords)
+        if 1.0 <= val < 600:
+            if is_flat_specific or not is_excluded:
+                m_vals.append(val)
+    if m_vals: return round(sum(m_vals), 3)
+    f_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
+        val = float(match.group(1))
+        context_before = text[max(0, match.start()-60):match.start()].lower()
+        is_excluded = any(word in context_before for word in exclude_keywords)
+        is_flat_specific = any(word in context_before for word in include_keywords)
+        if 10.0 <= val < 6000:
+            if is_flat_specific or not is_excluded:
+                f_vals.append(val)
+    if f_vals:
+        if ("अपार्टमेंट" in text or "सदनिका" in text) and "येथील" not in text:
+            return round(f_vals[0] / 10.764, 3)
+        return round(sum(f_vals) / 10.764, 3)
+    return 0.0
+
+def determine_config(area, t1, t2, t3):
+    if area == 0: return "N/A"
+    if area < t1: return "1 BHK"
+    elif area < t2: return "2 BHK"
+    elif area < t3: return "3 BHK"
+    else: return "4 BHK"
+
+def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    worksheet = writer.sheets[sheet_name]
+    worksheet.freeze_panes = "A2"
+    center_align = Alignment(horizontal='center', vertical='center')
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
+    color_idx = 0
+    start_row_prop = 2
+    start_row_cfg = 2
+    for i in range(1, worksheet.max_row + 1):
+        for j in range(1, worksheet.max_column + 1):
+            cell = worksheet.cell(row=i, column=j)
+            cell.alignment = center_align
+            if is_summary: cell.border = thin_border
+    if is_summary:
+        for i in range(2, len(df) + 2):
+            curr_prop = df.iloc[i-2, 0]
+            next_prop = df.iloc[i-1, 0] if i-1 < len(df) else None
+            fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
+            for col in range(1, len(df.columns) + 1):
+                worksheet.cell(row=i, column=col).fill = fill
+            if curr_prop != next_prop:
+                if i > start_row_prop: worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
+                color_idx += 1
+                start_row_prop = i + 1
+            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
+            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
+            if curr_cfg_key != next_cfg_key:
+                if i > start_row_cfg: worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
+                start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
 
-# UI Note section
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
         <span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
@@ -74,38 +136,73 @@ st.markdown("""
     """, unsafe_allow_html=True)
 st.divider()
 
-# (Assuming file upload and calculation logic is here)
-# ...
+# Calculation Sidebar Settings
+st.sidebar.header("Calculation Settings")
+loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
+t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
+t2 = st.sidebar.number_input("2 BHK Threshold (<)", value=850)
+t3 = st.sidebar.number_input("3 BHK Threshold (<)", value=1100)
 
-if 'summary' in locals():
-    st.subheader("📩 Share Report")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        # Key="email" helps trigger browser autofill
-        raw_input = st.text_input("Recipient Email ID", placeholder="firstname.lastname", key="email")
-        clean_id = raw_input.split('@')[0].strip().lower()
-    with c2:
-        st.markdown("<div style='padding-top: 32px; font-weight: bold; color: #555;'>@beyondwalls.com</div>", unsafe_allow_html=True)
+uploaded_file = st.file_uploader("Upload Data File (.xlsx or .csv)", type=["xlsx", "csv"])
+
+if uploaded_file:
+    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+    clean_cols = {c.lower().strip(): c for c in df.columns}
+    desc_col, cons_col, prop_col = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
     
-    full_email = f"{clean_id}@beyondwalls.com"
-    
-    if st.button("Send to Email"):
-        if clean_id:
-            # 1. OPTIONAL: Check against a list of known employees
-            # if clean_id not in AUTHORIZED_USERS:
-            #     st.error("User not found in organization. Please check the email ID again.")
+    if desc_col and cons_col and prop_col:
+        with st.spinner('Calculating...'):
+            df['Carpet Area (SQ.MT)'] = df[desc_col].apply(extract_area_logic)
+            df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
+            df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
+            df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
+            df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
             
-            # 2. Syntax Check
-            if not re.match(r"^[a-z0-9.]+$", clean_id):
-                st.error("Invalid characters detected. Please check the email ID again.")
-            else:
-                with st.spinner(f"Validating and sending to {full_email}..."):
-                    success, message = send_email(full_email, output.getvalue(), "Spydarr_Report.xlsx")
-                    if success:
-                        st.success(f"Report successfully sent to {full_email}!")
-                        st.balloons()
-                    else:
-                        # This error message is triggered if the email doesn't exist
-                        st.error(f"Failed to send. Please check the email ID again.")
-        else:
-            st.warning("Please enter a name.")
+            calc_cols = ['Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)', 'Saleable Area', 'APR', 'Configuration']
+            other_cols = [c for c in df.columns if c not in calc_cols]
+            df = df[other_cols + calc_cols]
+
+            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
+            summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
+                Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
+                Median_APR=('APR', 'median'),
+                Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
+                Property_Count=(prop_col, 'count')
+            ).reset_index()
+            summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
+            summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
+
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
+                apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
+            
+            st.success("Analysis Complete!")
+            
+            st.subheader("📩 Share Report")
+            # --- ANTI-AUTOFILL UI ---
+            c1, c2, c3 = st.columns([1, 1, 1])
+            with c1:
+                # Randomized key prevents browser from linking it to 'first name' memory
+                fname = st.text_input("Rec. P1", placeholder="Prefix 1", key="input_78x_p1").strip().lower()
+            with c2:
+                # Using non-standard labels confuses the autofill engines
+                lname = st.text_input("Rec. P2", placeholder="Prefix 2", key="input_92y_p2").strip().lower()
+            with c3:
+                st.markdown("<div style='padding-top: 32px; font-weight: bold; color: #555;'>@beyondwalls.com</div>", unsafe_allow_html=True)
+            
+            if st.button("Send to Email"):
+                if fname and lname:
+                    # Clean input just in case something was pasted
+                    f_clean = fname.split('@')[0]
+                    l_clean = lname.split('@')[0]
+                    full_email = f"{f_clean}.{l_clean}@beyondwalls.com"
+                    
+                    with st.spinner(f"Sending to {full_email}..."):
+                        if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
+                            st.success(f"Sent to {full_email.title()}!")
+                            st.balloons()
+                else:
+                    st.warning("Please fill both prefix boxes.")
+    else:
+        st.error("Missing required columns in uploaded file.")
