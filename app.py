@@ -17,7 +17,6 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 
 def send_email(recipient_email, excel_data, filename):
     try:
-        recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
         msg = MIMEMultipart()
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
@@ -30,6 +29,8 @@ The report includes:
 
 Regards,
 Atharva Joshi"""
+        
+        msg.attach(MIMEText(body, 'plain'))
 
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
@@ -49,56 +50,48 @@ Atharva Joshi"""
 
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
-    
     text = " ".join(str(text).split())
     
-    # 1. FIXED REGEX PATTERNS
-    # Catches: चौ, चाै, चौ., चाै. with any spacing or dots
+    # Updated Regex Patterns for Units
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
-    # Catches: फू, फूट, फुट, फू. with any spacing or dots
-    f_unit = r'(?:चौरस\s*फू[टत]|चौरस\s*फु[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
+    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
-    total_keywords = r'(?:ए[ककु]ण|क्षेत्रफळ|कार्पेट|carpet|total|area)'
-    parking_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे"]
+    # Strong exclusion list for land, projects, and parking
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "प्रकल्प", "लॉट"]
 
     # --- STEP 1: METRIC (SQ.MT) ---
-    m_matches = re.findall(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE)
-    if m_matches:
-        m_vals = []
-        # Find positions to check context
-        for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
-            val = float(match.group(1))
-            context_before = text[max(0, match.start()-30):match.start()].lower()
-            if 10 < val < 600 and not any(word in context_before for word in parking_keywords):
-                m_vals.append(val)
+    m_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
+        val = float(match.group(1))
+        # Check context for exclusions (broadened window to 60 chars)
+        context_before = text[max(0, match.start()-60):match.start()].lower()
+        is_excluded = any(word in context_before for word in exclude_keywords)
         
-        if m_vals:
-            t_match = re.search(rf'{total_keywords}.*?(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE)
-            if t_match: return round(float(t_match.group(1)), 3)
-            return round(sum(m_vals), 3)
+        # Valid range: 2.0 (balconies) to 600 (flats). Land usually > 1000.
+        if 2.0 <= val < 600 and not is_excluded:
+            m_vals.append(val)
+    
+    if m_vals:
+        return round(sum(m_vals), 3)
 
     # --- STEP 2: IMPERIAL (SQ.FT) ---
-    f_matches = re.findall(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE)
-    if f_matches:
-        f_vals = []
-        for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
-            val = float(match.group(1))
-            context_before = text[max(0, match.start()-30):match.start()].lower()
-            if 100 < val < 5000 and not any(word in context_before for word in parking_keywords):
-                f_vals.append(val)
+    f_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
+        val = float(match.group(1))
+        context_before = text[max(0, match.start()-60):match.start()].lower()
+        is_excluded = any(word in context_before for word in exclude_keywords)
         
-        if f_vals:
-            # Handle the multi-flat issue (Example 3)
-            if "अपार्टमेंट" in text or "सदनिका" in text:
-                return round(f_vals[0] / 10.764, 3)
+        if 20.0 <= val < 6000 and not is_excluded:
+            f_vals.append(val)
             
-            t_match = re.search(rf'{total_keywords}.*?(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE)
-            if t_match: return round(float(t_match.group(1)) / 10.764, 3)
-            return round(sum(f_vals) / 10.764, 3)
-
+    if f_vals:
+        # If text is a list of multiple flats, take only the first to avoid summing separate units
+        if ("अपार्टमेंट" in text or "सदनिका" in text) and "येथील" not in text:
+            return round(f_vals[0] / 10.764, 3)
+        return round(sum(f_vals) / 10.764, 3)
+        
     return 0.0
 
-# --- REMAINING CODE (determine_config, apply_excel_formatting, UI logic) ---
 def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
     if area < t1: return "1 BHK"
@@ -138,16 +131,20 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                 if i > start_row_cfg: worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
                 start_row_cfg = i + 1
 
-st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
+
+# Compact yellow box note
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
-        <span style='background-color: #99cc33; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
-            <u><strong>NOTE :-</strong> Please cross-check the report manually.</u>
+        <span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
+            <u><strong>NOTE :-</strong> Please cross check the sheet manually.</u>
         </span>
     </div>
     """, unsafe_allow_html=True)
 st.divider()
+
 st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
 t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
@@ -192,7 +189,7 @@ if uploaded_file:
             recipient = st.text_input("Enter Email Address")
             if st.button("Send to Email"):
                 if recipient and send_email(recipient, output.getvalue(), "Market_Research_Summary.xlsx"):
-                    st.success("Sent!")
+                    st.success("Sent to Inbox!")
                     st.balloons()
     else:
-        st.error("Missing columns.")
+        st.error("Missing columns: 'Property', 'Property Description', or 'Consideration Value'.")
