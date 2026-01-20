@@ -17,7 +17,9 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 
 def send_email(recipient_email, excel_data, filename):
     try:
+        # Construct greeting from the constructed email prefix
         recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
+        
         msg = MIMEMultipart()
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
@@ -35,7 +37,6 @@ Regards,
 Atharva Joshi"""
         
         msg.attach(MIMEText(body, 'plain'))
-
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
         encoders.encode_base64(part)
@@ -59,7 +60,7 @@ def extract_area_logic(text):
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवरील", "एकूण क्षेत्र"]
     include_keywords = ["फ्लॅट", "सदनिका", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट"]
-
+    
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
@@ -69,8 +70,7 @@ def extract_area_logic(text):
         if 1.0 <= val < 600:
             if is_flat_specific or not is_excluded:
                 m_vals.append(val)
-    if m_vals:
-        return round(sum(m_vals), 3)
+    if m_vals: return round(sum(m_vals), 3)
 
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
@@ -127,7 +127,7 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                 start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
+st.set_page_config(page_title="Spydarr Market Sumamry Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
 
 st.markdown("""
@@ -182,21 +182,25 @@ if uploaded_file:
             st.success("Analysis Complete!")
             
             st.subheader("📩 Share Report")
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                # Updated placeholder to match the requested ghost text
-                username = st.text_input("Username:", placeholder="firstname.lastname")
-            with col2:
-                # Clearly showing the domain
-                st.markdown("<div style='padding-top: 32px;'>@beyondwalls.com</div>", unsafe_allow_html=True)
+            # --- NEW NAME INPUT UI ---
+            c1, c2, c3 = st.columns([1, 1, 1])
+            with c1:
+                fname = st.text_input("First Name", placeholder="e.g. Atharva").strip().lower()
+            with c2:
+                lname = st.text_input("Last Name", placeholder="e.g. Joshi").strip().lower()
+            with c3:
+                st.markdown("<div style='padding-top: 32px; font-weight: bold;'>@beyondwalls.com</div>", unsafe_allow_html=True)
             
             if st.button("Send to Email"):
-                if username:
-                    full_email = f"{username.strip()}@beyondwalls.com"
-                    if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
-                        st.success(f"Report successfully sent to {full_email}!")
-                        st.balloons()
+                if fname and lname:
+                    # Combine to form official email address
+                    full_email = f"{fname}.{lname}@beyondwalls.com"
+                    
+                    with st.spinner(f"Sending to {full_email}..."):
+                        if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
+                            st.success(f"Report successfully sent to {full_email.title()}!")
+                            st.balloons()
                 else:
-                    st.warning("Please enter your name.")
+                    st.warning("Please enter both First and Last Name.")
     else:
         st.error("Required columns missing.")
