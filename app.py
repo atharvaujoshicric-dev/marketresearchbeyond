@@ -56,18 +56,23 @@ def extract_area_logic(text):
     text = " ".join(str(text).split())
     text = text.replace(' ,', ',').replace(', ', ',')
     
-    m_unit = r'(?:चौ\.?\s*मी\.?|चौरस\s*मी[टत]र|sq\.?\s*m(?:tr)?\.?)'
-    f_unit = r'(?:चौ\.?\s*फू\.?|चौरस\s*फु[टत]|sq\.?\s*f(?:t)?\.?)'
+    # Enhanced Regex to include English variations (Square Meter, sq mtr, etc.)
+    m_unit = r'(?:चौ\.?\s*मी\.?|चौरस\s*मी[टत]र|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
+    f_unit = r'(?:चौ\.?\s*फू\.?|चौरस\s*फु[टत]|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     total_keywords = r'(?:ए[ककु]ण\s*क्षेत्र|क्षेत्रफळ|total\s*area)'
     
+    # 1. Metric Extraction (SQ.MT)
     m_segments = re.split(f'(\d+\.?\d*)\s*{m_unit}', text, flags=re.IGNORECASE)
     m_vals = []
     for i in range(1, len(m_segments), 2):
         val = float(m_segments[i])
         context_before = m_segments[i-1].lower()
-        parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
+        # Added "parking no" and "land" to exclusion to avoid survey/land area confusion
+        parking_keywords = ["पार्किंग", "पार्कींग", "parking", "land"]
         is_parking = any(word in context_before for word in parking_keywords)
-        if 0 < val < 500 and not is_parking:
+        
+        # Avoid extremely large land areas while focusing on property area
+        if 0 < val < 600 and not is_parking:
             m_vals.append(val)
     
     if m_vals:
@@ -76,14 +81,15 @@ def extract_area_logic(text):
         if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 1: return round(m_vals[-1], 3)
         return round(sum(m_vals), 3)
         
+    # 2. Imperial Extraction (SQ.FT)
     f_segments = re.split(f'(\d+\.?\d*)\s*{f_unit}', text, flags=re.IGNORECASE)
     f_vals = []
     for i in range(1, len(f_segments), 2):
         val = float(f_segments[i])
         context_before = f_segments[i-1].lower()
-        parking_keywords = ["पार्किंग", "पार्कींग", "parking"]
+        parking_keywords = ["पार्किंग", "पार्कींग", "parking", "land"]
         is_parking = any(word in context_before for word in parking_keywords)
-        if 0 < val < 5000 and not is_parking:
+        if 0 < val < 6000 and not is_parking:
             f_vals.append(val)
                 
     if f_vals:
@@ -103,7 +109,7 @@ def determine_config(area, t1, t2, t3):
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
-    worksheet.freeze_panes = "A2"
+    worksheet.freeze_panes = "A2" # Freeze headers
     
     center_align = Alignment(horizontal='center', vertical='center')
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
@@ -144,11 +150,9 @@ t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
 t2 = st.sidebar.number_input("2 BHK Threshold (<)", value=850)
 t3 = st.sidebar.number_input("3 BHK Threshold (<)", value=1100)
 
-# Added CSV to the accepted file types
 uploaded_file = st.file_uploader("Upload Data File (.xlsx or .csv)", type=["xlsx", "csv"])
 
 if uploaded_file:
-    # Logic to handle different file types
     if uploaded_file.name.endswith('.csv'):
         df = pd.read_csv(uploaded_file)
     else:
