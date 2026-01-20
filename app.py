@@ -17,7 +17,9 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 
 def send_email(recipient_email, excel_data, filename):
     try:
-        recipient_name=recipient_email.split('@')[0].replace('.', ' ').title ()
+        # Extracts name for greeting from the username part
+        recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
+        
         msg = MIMEMultipart()
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
@@ -33,6 +35,7 @@ The report includes:
 
 Regards,
 Atharva Joshi"""
+        
         msg.attach(MIMEText(body, 'plain'))
 
         part = MIMEBase('application', 'octet-stream')
@@ -58,46 +61,34 @@ def extract_area_logic(text):
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
-    # Exclude numbers belonging to land, whole projects, or parking
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवरील", "एकूण क्षेत्र"]
-    # Include keywords that override exclusions (if these are nearby, the number is likely a flat area)
     include_keywords = ["फ्लॅट", "सदनिका", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट"]
 
-    # --- STEP 1: METRIC (SQ.MT) ---
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-60):match.start()].lower()
-        
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_flat_specific = any(word in context_before for word in include_keywords)
-        
-        # Logic: If it's a flat/unit, ignore the general "project" exclusions
         if 1.0 <= val < 600:
             if is_flat_specific or not is_excluded:
                 m_vals.append(val)
-    
     if m_vals:
         return round(sum(m_vals), 3)
 
-    # --- STEP 2: IMPERIAL (SQ.FT) ---
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-60):match.start()].lower()
-        
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_flat_specific = any(word in context_before for word in include_keywords)
-        
         if 10.0 <= val < 6000:
             if is_flat_specific or not is_excluded:
                 f_vals.append(val)
-            
     if f_vals:
         if ("अपार्टमेंट" in text or "सदनिका" in text) and "येथील" not in text:
             return round(f_vals[0] / 10.764, 3)
         return round(sum(f_vals) / 10.764, 3)
-        
     return 0.0
 
 def determine_config(area, t1, t2, t3):
@@ -145,7 +136,7 @@ st.title("Spydarr Dashboard")
 
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
-        <span style='background-color: #99cc33; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
+        <span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
             <u><strong>NOTE :-</strong> Please cross-check the report manually.</u>
         </span>
     </div>
@@ -193,10 +184,22 @@ if uploaded_file:
                 apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
             
             st.success("Analysis Complete!")
-            recipient = st.text_input("Enter Email Address")
+            
+            st.subheader("📩 Share Report")
+            # Changed to only ask for username
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                username = st.text_input("Enter recipient username:", placeholder="e.g. john.doe")
+            with col2:
+                st.markdown("<div style='padding-top: 32px;'>@beyondwalls.com</div>", unsafe_allow_html=True)
+            
             if st.button("Send to Email"):
-                if recipient and send_email(recipient, output.getvalue(), "Spydarr_Market_Report.xlsx"):
-                    st.success("Report Sent to Inbox!")
-                    st.balloons()
+                if username:
+                    full_email = f"{username}@beyondwalls.com"
+                    if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
+                        st.success(f"Report successfully sent to {full_email}!")
+                        st.balloons()
+                else:
+                    st.warning("Please enter a username.")
     else:
         st.error("Required columns missing.")
