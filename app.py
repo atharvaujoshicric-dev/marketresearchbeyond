@@ -125,8 +125,8 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                 start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
-st.title("Spydarr Dashboard")
+st.set_page_config(page_title="Spydarr Market Research Dashboard", layout="wide")
+st.title("Spydarr Market Research Dashboard")
 
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
@@ -180,18 +180,19 @@ if uploaded_file:
             st.success("Analysis Complete!")
             
             st.subheader("📩 Share Report")
-            # --- AUTOFILL-PROTECTED UI ---
-            c1, c2 = st.columns([3, 1])
+            c1, c2 = st.columns([2, 1])
             with c1:
-                # Ghost text firstname.lastname
-                raw_input = st.text_input("Enter recipient ID:", placeholder="firstname.lastname", key="email_input")
-                # Immediately strip everything after @ if user autofills
+                # 'label' and 'key' are changed to standard email terms to trigger Autofill
+                raw_input = st.text_input(
+                    "Recipient Email ID", 
+                    placeholder="firstname.lastname", 
+                    key="email", 
+                    help="You can enter the name or the full email; it will be locked to @beyondwalls.com"
+                )
                 clean_id = raw_input.split('@')[0].strip().lower()
             with c2:
-                # Permanent visual suffix
                 st.markdown("<div style='padding-top: 32px; font-weight: bold; color: #555;'>@beyondwalls.com</div>", unsafe_allow_html=True)
             
-            # The Final Email is always forced to beyondwalls.com
             full_email = f"{clean_id}@beyondwalls.com"
             
             if st.button("Send to Email"):
@@ -201,6 +202,6 @@ if uploaded_file:
                             st.success(f"Report successfully sent to {full_email}!")
                             st.balloons()
                 else:
-                    st.warning("Please enter a name or ID.")
+                    st.warning("Please enter a name or select an autofill suggestion.")
     else:
         st.error("Required columns missing.")
