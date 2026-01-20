@@ -19,7 +19,7 @@ def send_email(recipient_email, excel_data, filename):
     try:
         recipient_name =
 recipient_email.split('@')
-[O] replace!,('.', ' ').title ()
+[O] replace('.', ' ').title ()
         msg = MIMEMultipart()
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
