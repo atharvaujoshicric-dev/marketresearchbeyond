@@ -138,7 +138,7 @@ st.title("Spydarr Dashboard")
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
         <span style='background-color: #99cc33; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
-            <u><strong>NOTE :-</strong> Please cross check the sheet.</u>
+            <u><strong>NOTE :-</strong> Please cross-check the report manually.</u>
         </span>
     </div>
     """, unsafe_allow_html=True)
