@@ -52,24 +52,27 @@ def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     text = " ".join(str(text).split())
     
-    # Updated Regex Patterns for Units
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
-    # Strong exclusion list for land, projects, and parking
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "प्रकल्प", "लॉट"]
+    # Exclude numbers belonging to land, whole projects, or parking
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवरील", "एकूण क्षेत्र"]
+    # Include keywords that override exclusions (if these are nearby, the number is likely a flat area)
+    include_keywords = ["फ्लॅट", "सदनिका", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट"]
 
     # --- STEP 1: METRIC (SQ.MT) ---
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
-        # Check context for exclusions (broadened window to 60 chars)
         context_before = text[max(0, match.start()-60):match.start()].lower()
-        is_excluded = any(word in context_before for word in exclude_keywords)
         
-        # Valid range: 2.0 (balconies) to 600 (flats). Land usually > 1000.
-        if 2.0 <= val < 600 and not is_excluded:
-            m_vals.append(val)
+        is_excluded = any(word in context_before for word in exclude_keywords)
+        is_flat_specific = any(word in context_before for word in include_keywords)
+        
+        # Logic: If it's a flat/unit, ignore the general "project" exclusions
+        if 1.0 <= val < 600:
+            if is_flat_specific or not is_excluded:
+                m_vals.append(val)
     
     if m_vals:
         return round(sum(m_vals), 3)
@@ -79,13 +82,15 @@ def extract_area_logic(text):
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-60):match.start()].lower()
-        is_excluded = any(word in context_before for word in exclude_keywords)
         
-        if 20.0 <= val < 6000 and not is_excluded:
-            f_vals.append(val)
+        is_excluded = any(word in context_before for word in exclude_keywords)
+        is_flat_specific = any(word in context_before for word in include_keywords)
+        
+        if 10.0 <= val < 6000:
+            if is_flat_specific or not is_excluded:
+                f_vals.append(val)
             
     if f_vals:
-        # If text is a list of multiple flats, take only the first to avoid summing separate units
         if ("अपार्टमेंट" in text or "सदनिका" in text) and "येथील" not in text:
             return round(f_vals[0] / 10.764, 3)
         return round(sum(f_vals) / 10.764, 3)
@@ -135,7 +140,6 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
 st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
 
-# Compact yellow box note
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
         <span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'>
@@ -188,8 +192,8 @@ if uploaded_file:
             st.success("Analysis Complete!")
             recipient = st.text_input("Enter Email Address")
             if st.button("Send to Email"):
-                if recipient and send_email(recipient, output.getvalue(), "Market_Research_Summary.xlsx"):
-                    st.success("Sent to Inbox!")
+                if recipient and send_email(recipient, output.getvalue(), "Spydarr_Market_Report.xlsx"):
+                    st.success("Report Sent to Inbox!")
                     st.balloons()
     else:
-        st.error("Missing columns: 'Property', 'Property Description', or 'Consideration Value'.")
+        st.error("Required columns missing.")
