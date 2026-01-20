@@ -186,7 +186,7 @@ if uploaded_file:
             st.success("Analysis Complete!")
             recipient = st.text_input("Enter Email Address")
             if st.button("Send to Email"):
-                if recipient and send_email(recipient, output.getvalue(), "Property_Report.xlsx"):
+                if recipient and send_email(recipient, output.getvalue(), "Market_Research_Summary.xlsx"):
                     st.success("Sent!")
                     st.balloons()
     else:
