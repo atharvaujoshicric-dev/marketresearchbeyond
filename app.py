@@ -134,6 +134,7 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                 start_row_cfg = i + 1
 
 st.set_page_config(page_title="Real Estate Dashboard", layout="wide")
+st.title("Spydarr Dashboard")
 st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
 t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
