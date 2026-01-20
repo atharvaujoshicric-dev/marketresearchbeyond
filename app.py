@@ -17,9 +17,7 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 
 def send_email(recipient_email, excel_data, filename):
     try:
-        # Extracts name for greeting from the username part
         recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
-        
         msg = MIMEMultipart()
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
@@ -57,10 +55,8 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     text = " ".join(str(text).split())
-    
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
-    
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवरील", "एकूण क्षेत्र"]
     include_keywords = ["फ्लॅट", "सदनिका", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट"]
 
@@ -186,20 +182,21 @@ if uploaded_file:
             st.success("Analysis Complete!")
             
             st.subheader("📩 Share Report")
-            # Changed to only ask for username
             col1, col2 = st.columns([1, 2])
             with col1:
-                username = st.text_input("Enter recipient username:", placeholder="e.g. john.doe")
+                # Updated placeholder to match the requested ghost text
+                username = st.text_input("Username:", placeholder="firstname.lastname")
             with col2:
+                # Clearly showing the domain
                 st.markdown("<div style='padding-top: 32px;'>@beyondwalls.com</div>", unsafe_allow_html=True)
             
             if st.button("Send to Email"):
                 if username:
-                    full_email = f"{username}@beyondwalls.com"
+                    full_email = f"{username.strip()}@beyondwalls.com"
                     if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
                         st.success(f"Report successfully sent to {full_email}!")
                         st.balloons()
                 else:
-                    st.warning("Please enter a username.")
+                    st.warning("Please enter your name.")
     else:
         st.error("Required columns missing.")
