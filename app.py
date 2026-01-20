@@ -17,7 +17,9 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 
 def send_email(recipient_email, excel_data, filename):
     try:
+        # FIXED: Corrected the recipient_name logic and syntax
         recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
+        
         msg = MIMEMultipart()
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
@@ -35,6 +37,7 @@ Regards,
 Atharva Joshi"""
         
         msg.attach(MIMEText(body, 'plain'))
+
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
         encoders.encode_base64(part)
@@ -51,37 +54,50 @@ Atharva Joshi"""
         st.error(f"Error sending email: {e}")
         return False
 
-# ... (Previous extract_area_logic, determine_config, and apply_excel_formatting) ...
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     text = " ".join(str(text).split())
+    
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
+    
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवरील", "एकूण क्षेत्र"]
     include_keywords = ["फ्लॅट", "सदनिका", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट"]
+
+    # --- STEP 1: METRIC (SQ.MT) ---
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-60):match.start()].lower()
+        
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_flat_specific = any(word in context_before for word in include_keywords)
+        
         if 1.0 <= val < 600:
             if is_flat_specific or not is_excluded:
                 m_vals.append(val)
-    if m_vals: return round(sum(m_vals), 3)
+    
+    if m_vals:
+        return round(sum(m_vals), 3)
+
+    # --- STEP 2: IMPERIAL (SQ.FT) ---
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-60):match.start()].lower()
+        
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_flat_specific = any(word in context_before for word in include_keywords)
+        
         if 10.0 <= val < 6000:
             if is_flat_specific or not is_excluded:
                 f_vals.append(val)
+            
     if f_vals:
         if ("अपार्टमेंट" in text or "सदनिका" in text) and "येथील" not in text:
             return round(f_vals[0] / 10.764, 3)
         return round(sum(f_vals) / 10.764, 3)
+        
     return 0.0
 
 def determine_config(area, t1, t2, t3):
@@ -124,8 +140,8 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                 start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
-st.title("Spydarr Dashboard")
+st.set_page_config(page_title="Spydarr Market Research Dashboard", layout="wide")
+st.title("Spydarr Market Research Dashboard")
 
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
@@ -136,7 +152,6 @@ st.markdown("""
     """, unsafe_allow_html=True)
 st.divider()
 
-# Calculation Sidebar Settings
 st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
 t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
@@ -178,31 +193,10 @@ if uploaded_file:
                 apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
             
             st.success("Analysis Complete!")
-            
-            st.subheader("📩 Share Report")
-            # --- ANTI-AUTOFILL UI ---
-            c1, c2, c3 = st.columns([1, 1, 1])
-            with c1:
-                # Randomized key prevents browser from linking it to 'first name' memory
-                fname = st.text_input("Rec. P1", placeholder="Prefix 1", key="input_78x_p1").strip().lower()
-            with c2:
-                # Using non-standard labels confuses the autofill engines
-                lname = st.text_input("Rec. P2", placeholder="Prefix 2", key="input_92y_p2").strip().lower()
-            with c3:
-                st.markdown("<div style='padding-top: 32px; font-weight: bold; color: #555;'>@beyondwalls.com</div>", unsafe_allow_html=True)
-            
+            recipient = st.text_input("Enter Email Address")
             if st.button("Send to Email"):
-                if fname and lname:
-                    # Clean input just in case something was pasted
-                    f_clean = fname.split('@')[0]
-                    l_clean = lname.split('@')[0]
-                    full_email = f"{f_clean}.{l_clean}@beyondwalls.com"
-                    
-                    with st.spinner(f"Sending to {full_email}..."):
-                        if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
-                            st.success(f"Sent to {full_email.title()}!")
-                            st.balloons()
-                else:
-                    st.warning("Please fill both prefix boxes.")
+                if recipient and send_email(recipient, output.getvalue(), "Spydarr_Market_Report.xlsx"):
+                    st.success("Report Sent to Inbox!")
+                    st.balloons()
     else:
-        st.error("Missing required columns in uploaded file.")
+        st.error("Required columns missing.")
