@@ -44,12 +44,17 @@ Atharva Joshi"""
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(SENDER_EMAIL, APP_PASSWORD)
+        
+        # This will raise an exception if the email is rejected by Gmail's server
         server.send_message(msg)
         server.quit()
-        return True
+        return True, "Success"
+    except smtplib.SMTPRecipientsRefused:
+        return False, "Recipient Refused: The email ID does not exist or is blocked."
     except Exception as e:
-        st.error(f"Error sending email: {e}")
-        return False
+        return False, str(e)
+
+# ... (extract_area_logic, determine_config, apply_excel_formatting stay the same) ...
 
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
@@ -125,8 +130,8 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                 start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Spydarr Market Research Dashboard", layout="wide")
-st.title("Spydarr Market Research Dashboard")
+st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
+st.title("Spydarr Dashboard")
 
 st.markdown("""
     <div style='margin-top: -15px; margin-bottom: 10px;'>
@@ -137,6 +142,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 st.divider()
 
+# (Sidebar and Upload Logic)
 st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
 t1 = st.sidebar.number_input("1 BHK Threshold (<)", value=600)
@@ -178,17 +184,11 @@ if uploaded_file:
                 apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
             
             st.success("Analysis Complete!")
-            
+
             st.subheader("📩 Share Report")
             c1, c2 = st.columns([2, 1])
             with c1:
-                # 'label' and 'key' are changed to standard email terms to trigger Autofill
-                raw_input = st.text_input(
-                    "Recipient Email ID", 
-                    placeholder="firstname.lastname", 
-                    key="email", 
-                    help="You can enter the name or the full email; it will be locked to @beyondwalls.com"
-                )
+                raw_input = st.text_input("Recipient Email ID", placeholder="firstname.lastname", key="email")
                 clean_id = raw_input.split('@')[0].strip().lower()
             with c2:
                 st.markdown("<div style='padding-top: 32px; font-weight: bold; color: #555;'>@beyondwalls.com</div>", unsafe_allow_html=True)
@@ -197,11 +197,19 @@ if uploaded_file:
             
             if st.button("Send to Email"):
                 if clean_id:
-                    with st.spinner(f"Sending to {full_email}..."):
-                        if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
-                            st.success(f"Report successfully sent to {full_email}!")
-                            st.balloons()
+                    # Basic syntax check: names usually don't have spaces or special characters
+                    if not re.match(r"^[a-z0-9.]+$", clean_id):
+                        st.error("Invalid characters detected. Please check the email ID again.")
+                    else:
+                        with st.spinner(f"Sending to {full_email}..."):
+                            success, message = send_email(full_email, output.getvalue(), "Spydarr_Report.xlsx")
+                            if success:
+                                st.success(f"Report successfully sent to {full_email}!")
+                                st.balloons()
+                            else:
+                                # This triggers if Gmail rejects the address
+                                st.error(f"Failed to send: {message}. Please check the email ID again.")
                 else:
-                    st.warning("Please enter a name or select an autofill suggestion.")
+                    st.warning("Please enter a name.")
     else:
         st.error("Required columns missing.")
