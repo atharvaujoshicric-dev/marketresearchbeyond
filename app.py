@@ -17,7 +17,6 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 
 def send_email(recipient_email, excel_data, filename):
     try:
-        # FIXED: Corrected the recipient_name logic and syntax
         recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
         
         msg = MIMEMultipart()
@@ -64,15 +63,12 @@ def extract_area_logic(text):
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवरील", "एकूण क्षेत्र"]
     include_keywords = ["फ्लॅट", "सदनिका", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट"]
 
-    # --- STEP 1: METRIC (SQ.MT) ---
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-60):match.start()].lower()
-        
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_flat_specific = any(word in context_before for word in include_keywords)
-        
         if 1.0 <= val < 600:
             if is_flat_specific or not is_excluded:
                 m_vals.append(val)
@@ -80,15 +76,12 @@ def extract_area_logic(text):
     if m_vals:
         return round(sum(m_vals), 3)
 
-    # --- STEP 2: IMPERIAL (SQ.FT) ---
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-60):match.start()].lower()
-        
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_flat_specific = any(word in context_before for word in include_keywords)
-        
         if 10.0 <= val < 6000:
             if is_flat_specific or not is_excluded:
                 f_vals.append(val)
@@ -130,13 +123,18 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
             for col in range(1, len(df.columns) + 1):
                 worksheet.cell(row=i, column=col).fill = fill
             if curr_prop != next_prop:
-                if i > start_row_prop: worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
+                if i > start_row_prop: 
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
+                    # Also merge the Completion Date column (Column 2) if it belongs to the same property
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=2, end_row=i, end_column=2)
                 color_idx += 1
                 start_row_prop = i + 1
-            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1]]
-            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1]] if i-1 < len(df) else None
+            
+            # Key for merging configurations (Property + Completion Date + Config)
+            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1], df.iloc[i-2, 2]]
+            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1], df.iloc[i-1, 2]] if i-1 < len(df) else None
             if curr_cfg_key != next_cfg_key:
-                if i > start_row_cfg: worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
+                if i > start_row_cfg: worksheet.merge_cells(start_row=start_row_cfg, start_column=3, end_row=i, end_column=3)
                 start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
@@ -163,9 +161,12 @@ uploaded_file = st.file_uploader("Upload Data File (.xlsx or .csv)", type=["xlsx
 if uploaded_file:
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     clean_cols = {c.lower().strip(): c for c in df.columns}
-    desc_col, cons_col, prop_col = clean_cols.get('property description'), clean_cols.get('consideration value'), clean_cols.get('property')
+    desc_col = clean_cols.get('property description')
+    cons_col = clean_cols.get('consideration value')
+    prop_col = clean_cols.get('property')
+    date_col = clean_cols.get('completion date') # Detection of Completion Date
     
-    if desc_col and cons_col and prop_col:
+    if desc_col and cons_col and prop_col and date_col:
         with st.spinner('Calculating...'):
             df['Carpet Area (SQ.MT)'] = df[desc_col].apply(extract_area_logic)
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
@@ -177,14 +178,19 @@ if uploaded_file:
             other_cols = [c for c in df.columns if c not in calc_cols]
             df = df[other_cols + calc_cols]
 
-            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
-            summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
+            # Sorting including completion date
+            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, date_col, 'Configuration', 'Carpet Area (SQ.FT)'])
+            
+            # Updated Summary Grouping to include Completion Date
+            summary = valid_df.groupby([prop_col, date_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
                 Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
                 Median_APR=('APR', 'median'),
                 Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
                 Property_Count=(prop_col, 'count')
             ).reset_index()
-            summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
+            
+            # Updated Summary Column Names
+            summary.columns = ['Property', 'Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
             summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
 
             output = io.BytesIO()
@@ -199,4 +205,5 @@ if uploaded_file:
                     st.success("Report Sent to Inbox!")
                     st.balloons()
     else:
-        st.error("Required columns missing.")
+        # Improved error message to include Completion Date requirement
+        st.error("Required columns missing: Property, Property Description, Consideration Value, or Completion Date.")
