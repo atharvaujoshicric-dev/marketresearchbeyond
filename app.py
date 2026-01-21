@@ -125,10 +125,11 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
             if curr_prop != next_prop:
                 if i > start_row_prop: 
                     worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
+                    # Merge the "Total Count" column (last column) along with Property
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=len(df.columns), end_row=i, end_column=len(df.columns))
                 color_idx += 1
                 start_row_prop = i + 1
             
-            # Merge Configuration (Column 3) and Date (Column 2) per Property
             curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 2]] 
             next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 2]] if i-1 < len(df) else None
             if curr_cfg_key != next_cfg_key:
@@ -174,7 +175,6 @@ if uploaded_file:
             df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
             
-            # Ensure Date column is in datetime format
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
             
             calc_cols = ['Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)', 'Saleable Area', 'APR', 'Configuration']
@@ -183,9 +183,12 @@ if uploaded_file:
 
             valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
             
-            # Grouping Summary to pick only the LAST (max) completion date per Property/Config
+            # 1. Calculate Total Count per Property (Total sold in project)
+            total_project_counts = valid_df.groupby(prop_col).size().reset_index(name='Total Count')
+
+            # 2. Group Summary stats per Property/Config
             summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
-                Last_Date=(date_col, 'max'), # Picks 2026-12-31 over 2024-07-10
+                Last_Date=(date_col, 'max'),
                 Min_APR=('APR', 'min'), 
                 Max_APR=('APR', 'max'), 
                 Avg_APR=('APR', 'mean'),
@@ -194,13 +197,14 @@ if uploaded_file:
                 Property_Count=(prop_col, 'count')
             ).reset_index()
             
-            # Reorder for Excel
-            summary = summary[[prop_col, 'Last_Date', 'Configuration', 'Carpet Area (SQ.FT)', 'Min_APR', 'Max_APR', 'Avg_APR', 'Median_APR', 'Mode_APR', 'Property_Count']]
+            # 3. Join the Total Project Count back to the summary
+            summary = summary.merge(total_project_counts, on=prop_col, how='left')
             
-            # Convert date back to string for Excel output
+            summary = summary[[prop_col, 'Last_Date', 'Configuration', 'Carpet Area (SQ.FT)', 'Min_APR', 'Max_APR', 'Avg_APR', 'Median_APR', 'Mode_APR', 'Property_Count', 'Total Count']]
+            
             summary['Last_Date'] = summary['Last_Date'].dt.strftime('%d-%m-%Y')
             
-            summary.columns = ['Property', 'Last Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
+            summary.columns = ['Property', 'Last Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property', 'Total Count']
             summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
 
             output = io.BytesIO()
