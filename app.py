@@ -125,16 +125,17 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
             if curr_prop != next_prop:
                 if i > start_row_prop: 
                     worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
-                    # Also merge the Completion Date column (Column 2) if it belongs to the same property
-                    worksheet.merge_cells(start_row=start_row_prop, start_column=2, end_row=i, end_column=2)
                 color_idx += 1
                 start_row_prop = i + 1
             
-            # Key for merging configurations (Property + Completion Date + Config)
-            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 1], df.iloc[i-2, 2]]
-            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 1], df.iloc[i-1, 2]] if i-1 < len(df) else None
+            # Merging Logic for Configuration and Last Date per Property
+            curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 2]] # Property + Config
+            next_cfg_key = [df.iloc[i-1, 0], df.iloc[i-1, 2]] if i-1 < len(df) else None
             if curr_cfg_key != next_cfg_key:
-                if i > start_row_cfg: worksheet.merge_cells(start_row=start_row_cfg, start_column=3, end_row=i, end_column=3)
+                if i > start_row_cfg: 
+                    # Merge Last Completion Date (Column 2) and Config (Column 3)
+                    worksheet.merge_cells(start_row=start_row_cfg, start_column=2, end_row=i, end_column=2)
+                    worksheet.merge_cells(start_row=start_row_cfg, start_column=3, end_row=i, end_column=3)
                 start_row_cfg = i + 1
 
 # --- STREAMLIT UI ---
@@ -164,7 +165,7 @@ if uploaded_file:
     desc_col = clean_cols.get('property description')
     cons_col = clean_cols.get('consideration value')
     prop_col = clean_cols.get('property')
-    date_col = clean_cols.get('completion date') # Detection of Completion Date
+    date_col = clean_cols.get('completion date') 
     
     if desc_col and cons_col and prop_col and date_col:
         with st.spinner('Calculating...'):
@@ -174,23 +175,34 @@ if uploaded_file:
             df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
             
+            # Ensure Date is recognized correctly for sorting/picking max
+            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+            
             calc_cols = ['Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)', 'Saleable Area', 'APR', 'Configuration']
             other_cols = [c for c in df.columns if c not in calc_cols]
             df = df[other_cols + calc_cols]
 
-            # Sorting including completion date
-            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, date_col, 'Configuration', 'Carpet Area (SQ.FT)'])
+            # Primary sorting to group property and configs together
+            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
             
-            # Updated Summary Grouping to include Completion Date
-            summary = valid_df.groupby([prop_col, date_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
-                Min_APR=('APR', 'min'), Max_APR=('APR', 'max'), Avg_APR=('APR', 'mean'),
+            # --- UPDATED LOGIC: Group by Property & Config, then pick MAX(Date) ---
+            summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
+                Last_Date=(date_col, 'max'), # Picks the latest date
+                Min_APR=('APR', 'min'), 
+                Max_APR=('APR', 'max'), 
+                Avg_APR=('APR', 'mean'),
                 Median_APR=('APR', 'median'),
                 Mode_APR=('APR', lambda x: x.mode().iloc[0] if not x.mode().empty else 0),
                 Property_Count=(prop_col, 'count')
             ).reset_index()
             
-            # Updated Summary Column Names
-            summary.columns = ['Property', 'Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
+            # Reorder columns to place Last Date right after Property
+            summary = summary[[prop_col, 'Last_Date', 'Configuration', 'Carpet Area (SQ.FT)', 'Min_APR', 'Max_APR', 'Avg_APR', 'Median_APR', 'Mode_APR', 'Property_Count']]
+            
+            # Format the date back to readable string for Excel
+            summary['Last_Date'] = summary['Last_Date'].dt.strftime('%d-%m-%Y')
+            
+            summary.columns = ['Property', 'Last Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR', 'Count of Property']
             summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Mode of APR']].round(3)
 
             output = io.BytesIO()
@@ -205,5 +217,4 @@ if uploaded_file:
                     st.success("Report Sent to Inbox!")
                     st.balloons()
     else:
-        # Improved error message to include Completion Date requirement
         st.error("Required columns missing: Property, Property Description, Consideration Value, or Completion Date.")
