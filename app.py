@@ -22,18 +22,7 @@ def send_email(recipient_email, excel_data, filename):
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
         msg['Subject'] = "Spydarr Market Research Summary"
-        body = f"""Dear {recipient_name},
-        
-Please find the attached professional property market research.
-
-**Cross-Check it manually**
-
-The report includes:
-1. Raw Data with calculated APR and Configurations.
-2. A summarized view of APR statistics across properties.
-
-Regards,
-Atharva Joshi"""
+        body = f"Dear {recipient_name},\n\nPlease find the attached professional property analysis report.\n\nRegards,\nAtharva Joshi"
         msg.attach(MIMEText(body, 'plain'))
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
@@ -53,46 +42,30 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     text = " ".join(str(text).split())
-    
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
-    
-    # Enhanced exclusions for land and survey areas
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवर", "एकूण क्षेत्र", "क्षेत्र 442.9"]
     include_keywords = ["सदनिका", "फ्लॅट", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट", "सेंकड"]
-
-    # Logic: Identify areas specifically associated with the unit
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-70):match.start()].lower()
-        
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_unit_specific = any(word in context_before for word in include_keywords)
-        
-        # Priority: Only accept values that are unit-specific or not explicitly land/society areas
         if 2.0 <= val < 600:
             if is_unit_specific or not is_excluded:
                 m_vals.append(val)
-    
-    if m_vals:
-        # If multiple values found, and one is clearly 'unit specific', take that or sum them
-        return round(sum(m_vals), 3)
-
+    if m_vals: return round(sum(m_vals), 3)
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = text[max(0, match.start()-70):match.start()].lower()
         is_excluded = any(word in context_before for word in exclude_keywords)
         is_unit_specific = any(word in context_before for word in include_keywords)
-        
         if 20.0 <= val < 6000:
             if is_unit_specific or not is_excluded:
                 f_vals.append(val)
-            
-    if f_vals:
-        return round(sum(f_vals) / 10.764, 3)
-        
+    if f_vals: return round(sum(f_vals) / 10.764, 3)
     return 0.0
 
 def determine_config(area, t1, t2, t3):
@@ -110,20 +83,26 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
     color_idx, start_row_prop, start_row_cfg = 0, 2, 2
+    
     for i in range(1, worksheet.max_row + 1):
         for j in range(1, worksheet.max_column + 1):
             cell = worksheet.cell(row=i, column=j)
             cell.alignment = center_align
             if is_summary: cell.border = thin_border
+            
     if is_summary:
+        last_col = len(df.columns)
         for i in range(2, len(df) + 2):
             curr_prop = df.iloc[i-2, 0]
             next_prop = df.iloc[i-1, 0] if i-1 < len(df) else None
             fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
-            for col in range(1, len(df.columns) + 1):
+            for col in range(1, last_col + 1):
                 worksheet.cell(row=i, column=col).fill = fill
             if curr_prop != next_prop:
-                if i > start_row_prop: worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
+                if i > start_row_prop: 
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=1, end_row=i, end_column=1)
+                    # FIXED: Merging the Total Count column (Last Column)
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=last_col, end_row=i, end_column=last_col)
                 color_idx += 1
                 start_row_prop = i + 1
             curr_cfg_key = [df.iloc[i-2, 0], df.iloc[i-2, 2]] 
@@ -157,13 +136,14 @@ if uploaded_file:
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
             df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
-            
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
             
-            total_project_counts = df[df['Carpet Area (SQ.FT)'] > 0].groupby(prop_col).size().reset_index(name='Total Count')
-
+            calc_cols = ['Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)', 'Saleable Area', 'APR', 'Configuration']
+            df = df[[c for c in df.columns if c not in calc_cols] + calc_cols]
             valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
             
+            # Grouping Summary
+            total_project_counts = valid_df.groupby(prop_col).size().reset_index(name='Total Count')
             summary = valid_df.groupby([prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
                 Last_Date=(date_col, 'max'),
                 Min_APR=('APR', 'min'), 
@@ -175,7 +155,6 @@ if uploaded_file:
             
             summary = summary.merge(total_project_counts, on=prop_col, how='left')
             summary['Last_Date'] = summary['Last_Date'].dt.strftime('%d-%m-%Y')
-            
             summary = summary[[prop_col, 'Last_Date', 'Configuration', 'Carpet Area (SQ.FT)', 'Min_APR', 'Max_APR', 'Avg_APR', 'Median_APR', 'Property_Count', 'Total Count']]
             summary.columns = ['Property', 'Last Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']
             summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR']] = summary[['Min. APR', 'Max APR', 'Average of APR', 'Median of APR']].round(3)
