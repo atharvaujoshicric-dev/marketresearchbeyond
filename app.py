@@ -22,7 +22,7 @@ def send_email(recipient_email, excel_data, filename):
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
         msg['Subject'] = "Spydarr Market Research Summary"
-        body = f"Dear {recipient_name},\n\nPlease find the attached professional property market research.
+        body = f"Dear {recipient_name},Please find the attached professional property market research.
 
 **Cross-Check it manually**
 
