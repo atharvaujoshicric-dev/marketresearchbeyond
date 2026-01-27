@@ -22,7 +22,16 @@ def send_email(recipient_email, excel_data, filename):
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
         msg['Subject'] = "Spydarr Market Research Summary"
-        body = f"Dear {recipient_name},\n\nPlease find the attached professional property analysis report.\n\nRegards,\nAtharva Joshi"
+        body = f"Dear {recipient_name},\n\nPlease find the attached professional property market research.
+
+**Cross-Check it manually**
+
+The report includes:
+1. Raw Data with calculated APR and Configurations.
+2. A summarized view of APR statistics across properties.
+
+Regards,
+Atharva Joshi"
         msg.attach(MIMEText(body, 'plain'))
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
