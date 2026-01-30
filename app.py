@@ -56,7 +56,7 @@ def extract_area_logic(text):
     text = " ".join(str(text).split())
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|चाै[\.\s]*फू|चौ[\.\s]*फुट|चाै[\.\s]*फुट|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवर", "एकूण क्षेत्र", "क्षेत्र 442.9"]
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "land", "survey", "सर्वे", "जमीन", "मिळकतीवर", "एकूण क्षेत्र", "क्षेत्र 442.9" , "road" , "reserve"]
     include_keywords = ["सदनिका", "फ्लॅट", "युनिट", "रूम", "flat", "unit", "room", "अपार्टमेंट", "सेंकड"]
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', text, re.IGNORECASE):
