@@ -62,14 +62,18 @@ def extract_area_logic(text):
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
     # 2. UNIT PATTERNS
-    # UPDATED: Made [टत]र optional to catch "चौरस मी" as seen in your Chovishawadi example
+    # Includes optional [टत]र to catch "चौरस मी" as well as "चौरस मीटर"
     m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
     # 3. FOCUS LOGIC: Ignore land areas before project name
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील)'
+    # Added "टाऊन स्क्वेअर" and "मिळकतीवरील" to help split early survey numbers
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
-    relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
+    
+    # CRITICAL FIX: We take only the text AFTER the last focus keyword found
+    # In this case, it splits at "टाऊन स्क्वेअर" and ignores all survey areas
+    relevant_text = parts[-1] if len(parts) > 1 else text
 
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "मोबदला", "साईज", "size"]
     
@@ -79,11 +83,11 @@ def extract_area_logic(text):
         val = float(match.group(1))
         context_before = relevant_text[max(0, match.start()-50):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
-            # Capture components like Carpet (70.72), Open Balcony (6.26), Utility (2.25)
+            # Threshold to capture residential components (< 900)
             if 2.0 <= val < 900: m_vals.append(val)
             
     if m_vals:
-        # VALIDATION: Identify the total if it exists in the text
+        # VALIDATION: Identify if a stated total exists
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
                 if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
