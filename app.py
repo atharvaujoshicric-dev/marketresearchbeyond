@@ -195,7 +195,7 @@ if uploaded_file:
             ).reset_index()
             
             summary = summary.merge(project_counts, on=prop_col, how='left')
-            summary['Last_Date'] = summary['Last_Date'].dt.strftime('%d-%m-%Y')
+            summary['Last_Date'] = summary['Last_Date'].dt.strftime('%b-%Y')
             summary.columns = ['Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Last Completion Date', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']
             
             # Reorder for the specific summary structure
