@@ -62,20 +62,17 @@ def extract_area_logic(text):
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
     # 2. UNIT PATTERNS
-    # Includes optional [टत]र to catch "चौरस मी" as well as "चौरस मीटर"
     m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
-    # 3. FOCUS LOGIC: Ignore land areas before project name
-    # Added "टाऊन स्क्वेअर" and "मिळकतीवरील" to help split early survey numbers
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील)'
+    # 3. FOCUS LOGIC: Focus on the specific building/apartment details
+    # Added "ब्रम्हाकॉर्प" and "कलेक्शन" to project-specific triggers
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|ब्रम्हाकॉर्प|कलेक्शन)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
-    
-    # CRITICAL FIX: We take only the text AFTER the last focus keyword found
-    # In this case, it splits at "टाऊन स्क्वेअर" and ignores all survey areas
     relevant_text = parts[-1] if len(parts) > 1 else text
 
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "मोबदला", "साईज", "size"]
+    # UPDATED: Added "पैकी" and "अविभक्त" to ignore land portions
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size"]
     
     # 4. METRIC SUMMATION
     m_vals = []
@@ -83,11 +80,11 @@ def extract_area_logic(text):
         val = float(match.group(1))
         context_before = relevant_text[max(0, match.start()-50):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
-            # Threshold to capture residential components (< 900)
+            # Capture residential components (< 900)
             if 2.0 <= val < 900: m_vals.append(val)
             
     if m_vals:
-        # VALIDATION: Identify if a stated total exists
+        # VALIDATION: Identify if a stated total matches previous components
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
                 if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
