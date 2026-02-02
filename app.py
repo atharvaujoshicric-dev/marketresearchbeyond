@@ -66,16 +66,17 @@ def extract_area_logic(text):
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
     # 3. FOCUS LOGIC: Focus on the specific building/apartment details
-    # Added "ब्रम्हाकॉर्प" and "कलेक्शन" to project-specific triggers
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|ब्रम्हाकॉर्प|कलेक्शन)'
+    # Added "प्रिस्टीन" and "मिळकतीवर" to project-specific triggers
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = parts[-1] if len(parts) > 1 else text
 
-    # UPDATED: Added "पैकी" and "अविभक्त" to ignore land portions
+    # UPDATED: Added "फोर्मेड" and "प्लॉट" to exclusion context
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size"]
     
     # 4. METRIC SUMMATION
     m_vals = []
+    # Find numbers followed by metric units
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = relevant_text[max(0, match.start()-50):match.start()].lower()
@@ -84,10 +85,12 @@ def extract_area_logic(text):
             if 2.0 <= val < 900: m_vals.append(val)
             
     if m_vals:
-        # VALIDATION: Identify if a stated total matches previous components
+        # VALIDATION: Critical fix for Kharadi examples
+        # Check if any later number is the sum of previous numbers
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
-                if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
+                # If current number matches sum of all previous numbers, it is the total
+                if abs(m_vals[i] - sum(m_vals[:i])) < 0.1:
                     return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
