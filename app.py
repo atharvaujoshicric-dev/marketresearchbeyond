@@ -54,43 +54,46 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
-    # Standardize whitespace and remove commas in numbers for easy float conversion
+    # 1. CLEANUP & FIX: Stitches "broken" numbers like "54. 6" into "54.6"
+    # This ensures spaces inside decimals don't break the extraction
     text = " ".join(str(text).split())
+    text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
     text = re.sub(r'(\d),(\d)', r'\1\2', text) 
     
-    # Define unit patterns
+    # 2. UNIT PATTERNS
     m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
-    # Logic: Focus on text following specific "unit markers" like flat/apartment 
-    # to avoid land/survey area measurements usually found at the start of descriptions.
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील)'
+    # 3. FOCUS LOGIC: Expanded keywords to ignore land/survey areas
+    # Added "स्वामी रेसिडेन्सी", "गृहप्रकल्पातील", and "इमारत" to cut off plot measurements
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|स्वामी रेसिडेन्सी|स्वामी)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
 
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot"]
     
-    # Metric Extraction
+    # 4. METRIC SUMMATION
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = relevant_text[max(0, match.start()-40):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
-            if 2.0 <= val < 600: m_vals.append(val)
+            # Threshold to capture residential components and ignore land parcels
+            if 2.0 <= val < 800: m_vals.append(val)
             
     if m_vals:
-        # Avoid double-counting if the final value is the sum of previous values
+        # Avoid double-counting: if the last number matches the sum of previous ones, return the total
         if len(m_vals) > 1 and abs(m_vals[-1] - sum(m_vals[:-1])) < 0.5:
             return round(m_vals[-1], 3)
         return round(sum(m_vals), 3)
 
-    # Imperial Extraction
+    # 5. IMPERIAL SUMMATION FALLBACK
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = relevant_text[max(0, match.start()-40):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
-            if 20.0 <= val < 6500: f_vals.append(val)
+            if 20.0 <= val < 8000: f_vals.append(val)
                 
     if f_vals:
         if len(f_vals) > 1 and abs(f_vals[-1] - sum(f_vals[:-1])) < 5.0:
@@ -98,7 +101,6 @@ def extract_area_logic(text):
         return round(sum(f_vals) / 10.764, 3)
         
     return 0.0
-
 def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
     if area < t1: return "1 BHK"
