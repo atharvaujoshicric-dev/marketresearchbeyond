@@ -54,40 +54,39 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
-    # 1. CLEANUP & FIX: Stitches "broken" numbers and handles the '+' delimiters
+    # 1. CLEANUP & FIX: Stitches "broken" numbers and handles spacing
     text = " ".join(str(text).split())
     text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
     text = re.sub(r'(\d),(\d)', r'\1\2', text) 
-    # Standardize the '+' symbol to ensure the regex doesn't get confused
-    text = text.replace('+', ' + ')
+    # Handle parking dimensions to prevent picking up non-carpet numbers
+    text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
     # 2. UNIT PATTERNS
-    m_unit = r'(?:चौरस\s*मी[टत]र|चौरस\s*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
-    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
+    m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
+    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
-    # 3. FOCUS LOGIC: Ignore land areas before the project name
-    # Added "मंगलम मिडास सिटी" to ensure land data is skipped
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|मंगलम मिडास सिटी|मंगलम)'
+    # 3. FOCUS LOGIC: Refined to split exactly at the project/building transition
+    # Added "प्रकल्पातील" and "सदनिका" as primary split points to ignore survey areas
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|प्रकल्प)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
 
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "क्षेत्र 02", "हे"]
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "साईज", "size"]
     
-    # 4. METRIC SUMMATION (SQ.MT)
+    # 4. METRIC SUMMATION
     m_vals = []
-    # Using finditer to capture numbers followed by Metric units
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
         context_before = relevant_text[max(0, match.start()-50):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
-            # Capture components like 70.72, 6.26, and 2.25
+            # Residential component threshold
             if 2.0 <= val < 900: m_vals.append(val)
             
     if m_vals:
-        # Avoid double-counting if a total is stated (though not present here)
+        # Check for stated totals to prevent double counting
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
-                if abs(m_vals[i] - sum(m_vals[:i])) < 0.5:
+                if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
                     return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
