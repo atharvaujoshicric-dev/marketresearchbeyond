@@ -104,7 +104,7 @@ def determine_config(area, t1, t2, t3):
     if area < t1: return "1 BHK"
     elif area < t2: return "2 BHK"
     elif area < t3: return "3 BHK"
-    else: return "4 BHK+"
+    else: return "4 BHK"
 
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
