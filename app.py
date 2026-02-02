@@ -54,24 +54,24 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
-    # 1. CLEANUP & FIX: Stitches "broken" numbers and handles spacing
+    # 1. CLEANUP & FIX: Stitches "broken" numbers like "54. 6"
     text = " ".join(str(text).split())
     text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
     text = re.sub(r'(\d),(\d)', r'\1\2', text) 
-    # Handle parking dimensions to prevent picking up non-carpet numbers
+    # Handles parking dimensions to prevent them from being treated as carpet area
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
     # 2. UNIT PATTERNS
-    m_unit = r'(?:चौरस\s*मी[टत]र|चौ[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
+    # UPDATED: Made [टत]र optional to catch "चौरस मी" as seen in your Chovishawadi example
+    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
-    # 3. FOCUS LOGIC: Refined to split exactly at the project/building transition
-    # Added "प्रकल्पातील" and "सदनिका" as primary split points to ignore survey areas
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|प्रकल्प)'
+    # 3. FOCUS LOGIC: Ignore land areas before project name
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
 
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "साईज", "size"]
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "मोबदला", "साईज", "size"]
     
     # 4. METRIC SUMMATION
     m_vals = []
@@ -79,11 +79,11 @@ def extract_area_logic(text):
         val = float(match.group(1))
         context_before = relevant_text[max(0, match.start()-50):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
-            # Residential component threshold
+            # Capture components like Carpet (70.72), Open Balcony (6.26), Utility (2.25)
             if 2.0 <= val < 900: m_vals.append(val)
             
     if m_vals:
-        # Check for stated totals to prevent double counting
+        # VALIDATION: Identify the total if it exists in the text
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
                 if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
