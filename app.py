@@ -219,7 +219,7 @@ if uploaded_file:
             recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
             if st.button("Send to Email") and recipient:
                 full_email = f"{recipient.strip().lower()}@beyondwalls.com"
-                if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
+                if send_email(full_email, output.getvalue(), "Spydarr_Market_Summary.xlsx"):
                     st.success(f"Report sent to {full_email}")
     else:
         st.error("Missing required columns. Ensure file has 'Micromarket', 'Property Description', 'Consideration Value', 'Property', and 'Completion Date'.")
