@@ -54,20 +54,25 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
+    # 1. CLEANUP & FIX: Stitches "broken" numbers like "54. 6"
     text = " ".join(str(text).split())
     text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
     text = re.sub(r'(\d),(\d)', r'\1\2', text) 
+    # Handles parking dimensions to prevent them from being treated as carpet area
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
+    # 2. UNIT PATTERNS
     m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
+    # 3. FOCUS LOGIC: Focus on the specific building/apartment details
     focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = parts[-1] if len(parts) > 1 else text
 
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size"]
     
+    # 4. METRIC SUMMATION
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
@@ -78,10 +83,11 @@ def extract_area_logic(text):
     if m_vals:
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
-                if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
+                if abs(m_vals[i] - sum(m_vals[:i])) < 0.1:
                     return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
+    # 5. IMPERIAL SUMMATION FALLBACK
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
@@ -120,36 +126,44 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
             if is_summary: cell.border = thin_border
 
     if is_summary:
-        color_idx, start_row_loc, start_row_prop = 0, 2, 2
+        color_idx, start_row = 0, 2
         last_col = len(df.columns)
+        white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        
+        # Track Grouping for Merges
+        loc_start_row = 2
+        prop_start_row = 2
+
         for i in range(2, len(df) + 3):
-            # Check for changes in Location (Col 1) and Property (Col 2)
             curr_loc = df.iloc[i-2, 0] if i-2 < len(df) else None
             prev_loc = df.iloc[i-3, 0] if i-3 >= 0 else None
             
             curr_prop = df.iloc[i-2, 1] if i-2 < len(df) else None
             prev_prop = df.iloc[i-3, 1] if i-3 >= 0 else None
             
-            # Formatting based on Location change
+            # 1. Location Merge (Always White)
             if curr_loc != prev_loc and i > 2:
+                if i-1 > loc_start_row:
+                    worksheet.merge_cells(start_row=loc_start_row, start_column=1, end_row=i-1, end_column=1)
+                for r in range(loc_start_row, i):
+                    worksheet.cell(row=r, column=1).fill = white_fill
+                loc_start_row = i
+
+            # 2. Property Merge & Color Banding
+            if curr_prop != prev_prop and i > 2:
                 fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
-                for r in range(start_row_loc, i):
-                    for c in range(1, last_col + 1):
+                for r in range(prop_start_row, i):
+                    # Fill from Column 2 to Last Column (skipping white Location column)
+                    for c in range(2, last_col + 1):
                         worksheet.cell(row=r, column=c).fill = fill
                 
-                if i-1 > start_row_loc:
-                    # Merge and center Location column
-                    worksheet.merge_cells(start_row=start_row_loc, start_column=1, end_row=i-1, end_column=1)
+                if i-1 > prop_start_row:
+                    # Merge Property Name (Col 2) and Total Count (Last Col)
+                    worksheet.merge_cells(start_row=prop_start_row, start_column=2, end_row=i-1, end_column=2)
+                    worksheet.merge_cells(start_row=prop_start_row, start_column=last_col, end_row=i-1, end_column=last_col)
                 
-                start_row_loc = i
+                prop_start_row = i
                 color_idx += 1
-            
-            # Merging Property and Total Count based on Property change
-            if curr_prop != prev_prop and i > 2:
-                if i-1 > start_row_prop:
-                    worksheet.merge_cells(start_row=start_row_prop, start_column=2, end_row=i-1, end_column=2)
-                    worksheet.merge_cells(start_row=start_row_prop, start_column=last_col, end_row=i-1, end_column=last_col)
-                start_row_prop = i
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
@@ -171,7 +185,7 @@ if uploaded_file:
     cons_col = clean_cols.get('consideration value')
     prop_col = clean_cols.get('property')
     date_col = clean_cols.get('completion date')
-    loc_col = clean_cols.get('micromarket') # Mapping Location column
+    loc_col = clean_cols.get('micromarket') # Required column for Location logic
     
     if desc_col and cons_col and prop_col and date_col and loc_col:
         with st.spinner('Calculating...'):
@@ -182,11 +196,10 @@ if uploaded_file:
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
             
-            # Sort by Location and Property for proper grouping
+            # Sort by Micromarket first to ensure grouping works
             valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
             
             project_counts = valid_df.groupby(prop_col).size().reset_index(name='Total Count')
-            # Grouping summary with Location
             summary = valid_df.groupby([loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
                 Last_Date=(date_col, 'max'),
                 Min_APR=('APR', 'min'), 
@@ -200,7 +213,7 @@ if uploaded_file:
             summary['Last_Date'] = pd.to_datetime(summary['Last_Date'], errors='coerce')
             summary['Last_Date'] = summary['Last_Date'].apply(lambda x: x.strftime('%b-%Y') if pd.notnull(x) else "N/A")
             
-            # Reorder for Location as first column
+            # Final Column Naming and Ordering
             summary.columns = ['Location', 'Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Last Completion Date', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']
             summary = summary[['Location', 'Property', 'Last Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']]
 
@@ -216,4 +229,4 @@ if uploaded_file:
                 if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
                     st.success(f"Report sent to {full_email}")
     else:
-        st.error("Required columns missing: Micromarket, Property Description, Consideration Value, Property, Completion Date.")
+        st.error("Missing required columns. Ensure your file has 'Micromarket', 'Property Description', 'Consideration Value', 'Property', and 'Completion Date'.")
