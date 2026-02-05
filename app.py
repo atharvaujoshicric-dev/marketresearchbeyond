@@ -164,7 +164,7 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
 st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
 st.markdown("<div style='margin-top: -15px; margin-bottom: 10px;'><span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'><u><strong>NOTE :-</strong> Please cross-check the report manually.</u></span></div>", unsafe_allow_html=True)
-st.markdown("[Property Report Tool · Streamlit](https://summarybeyondwalls.streamlit.app/)")
+st.markdown("[To get the Report from the Summary click here.](https://summarybeyondwalls.streamlit.app/)")
 st.divider()
 
 st.sidebar.header("Calculation Settings")
