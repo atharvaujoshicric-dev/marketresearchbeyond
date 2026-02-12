@@ -57,6 +57,9 @@ def extract_area_logic(text):
     # 1. CLEANUP & FIX: Standardize whitespace
     text = " ".join(str(text).split())
     
+    # NEW FIX: Handle double dots like "123..34" -> "123.34"
+    text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
+    
     # FIX: Stitches numbers with spaces around the decimal (e.g., "79 .31" -> "79.31")
     text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
     
@@ -71,11 +74,13 @@ def extract_area_logic(text):
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
     
     # 3. FOCUS LOGIC
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प)'
+    # Added "योजनेतील" to focus keywords
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प|योजनेतील)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = parts[-1] if len(parts) > 1 else text
 
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size"]
+    # NEW EXCLUSIONS: Added "बिल्डअप" (Builtup) and "मुल्यांकन" (Valuation) 
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन"]
     
     # 4. METRIC SUMMATION
     m_vals = []
@@ -103,7 +108,7 @@ def extract_area_logic(text):
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
-        context_before = relevant_text[max(0, match.start()-60):start_idx].lower()
+        context_before = relevant_text[max(0, match.start()-60):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
             if 20.0 <= val < 9000: f_vals.append(val)
                 
