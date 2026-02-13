@@ -57,29 +57,26 @@ def extract_area_logic(text):
     # 1. CLEANUP & FIX: Standardize whitespace
     text = " ".join(str(text).split())
     
-    # NEW FIX: Handle double dots like "123..34" -> "123.34"
+    # FIX: Handle common typos like "म्हणजचे" or "म्हणजे" and space/dot issues
+    text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
     text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
-    
-    # FIX: Stitches numbers with spaces around the decimal (e.g., "79 .31" -> "79.31")
     text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
-    
-    # Fix trailing dots and other broken number formats
     text = re.sub(r'(\d+\.\d+)\.', r'\1', text)
     text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
     text = re.sub(r'(\d),(\d)', r'\1\2', text) 
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
     # 2. UNIT PATTERNS
-    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)'
-    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)'
+    # UPDATED: Added flexibility for "कारपेट एरिया" and "area"
+    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी|चाै[\.\s]*मी|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*कारपेट)?(?:\s*एरिया|area)?'
+    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*area)?'
     
     # 3. FOCUS LOGIC
-    # Added "योजनेतील" to focus keywords
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प|योजनेतील)'
+    # Added "नियोजित" (planned) to help split descriptions like Skyline Pride
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प|योजननेतील|नियोजित)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = parts[-1] if len(parts) > 1 else text
 
-    # NEW EXCLUSIONS: Added "बिल्डअप" (Builtup) and "मुल्यांकन" (Valuation) 
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन"]
     
     # 4. METRIC SUMMATION
@@ -98,6 +95,7 @@ def extract_area_logic(text):
                 m_vals.append(val)
             
     if m_vals:
+        # VALIDATION: Check if any number is the sum of previous numbers
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
                 if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
