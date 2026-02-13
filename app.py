@@ -54,65 +54,63 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
-    # 1. CLEANUP & FIX: Standardize whitespace and common typos
+    # 1. CLEANUP: Standardize whitespace and Marathi punctuation
     text = " ".join(str(text).split())
-    
-    # Standardize Marathi "namely/meaning" and punctuation around decimals
     text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
     text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
     text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
     text = re.sub(r'(\d+\.\d+)\.', r'\1', text)
     text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
     text = re.sub(r'(\d),(\d)', r'\1\2', text) 
+    text = text.replace('.-', '.')
     
-    # Neutralize parking dimensions (e.g., 2.3 x 4.5)
+    # Neutralize parking dimensions
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
     # 2. UNIT PATTERNS
-    # UPDATED: Improved the dot/space handling to catch collapsed text like "52.20चौ मी"
     m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*कारपेट|कार्पेट)?(?:\s*एरिया|area)?'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*area)?'
     
     # 3. FOCUS LOGIC: Ignore land/plot areas mentioned at the start
-    # ADDED: "इमारतप्रकल्पातील" for Shankeshwar Sparsh specifically
+    # Added 'मिळकतीवर' and 'येथील' to handle descriptions that start with land stats
     focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प|योजनेतील|नियोजित|इमारतप्रकल्पातील)'
     parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
     relevant_text = parts[-1] if len(parts) > 1 else text
 
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन", "दर", "rate"]
     
-    # 4. METRIC SUMMATION
+    # 4. METRIC SUMMATION (SQ.MT)
     m_vals = []
-    # UPDATED: Removed the forced space \s* between the digit and the unit pattern
     for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
         start_idx = match.start()
-        context_before = relevant_text[max(0, start_idx-60):start_idx].lower()
+        # Look at the context immediately before the number
+        context_before = relevant_text[max(0, start_idx-40):start_idx].lower()
         
-        bracket_context = relevant_text[max(0, start_idx-150):start_idx]
-        is_rera_duplicate = "(" in bracket_context and "रेरा" in bracket_context and ")" not in bracket_context
-        
+        # FIX: Removed the restrictive 'is_rera_duplicate' bracket check
         if not any(word in context_before for word in exclude_keywords):
-            if 2.0 <= val < 900 and not is_rera_duplicate:
-                if not m_vals or val != m_vals[-1]:
+            if 2.0 <= val < 900:
+                # Deduplication: only add if this exact value isn't already found 
+                # (handles cases where RERA area and Carpet area are identical)
+                if not m_vals or val not in m_vals:
                     m_vals.append(val)
             
     if m_vals:
+        # Check if one value is actually the SUM of others (The "Meaning/Total" logic)
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
-                if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
+                if abs(m_vals[i] - sum(m_vals[:i])) < 0.5:
                     return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
-    # 5. IMPERIAL SUMMATION FALLBACK
+    # 5. IMPERIAL SUMMATION FALLBACK (SQ.FT)
     f_vals = []
-    # UPDATED: Removed the forced space \s* for imperial units as well
     for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
-        context_before = relevant_text[max(0, match.start()-60):match.start()].lower()
+        context_before = relevant_text[max(0, match.start()-40):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
             if 20.0 <= val < 9000:
-                if not f_vals or val != f_vals[-1]:
+                if not f_vals or val not in f_vals:
                     f_vals.append(val)
                 
     if f_vals:
