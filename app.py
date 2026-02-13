@@ -59,63 +59,63 @@ def extract_area_logic(text):
     text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
     text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
     text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
-    text = re.sub(r'(\d+\.\d+)\.', r'\1', text)
-    text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
-    text = re.sub(r'(\d),(\d)', r'\1\2', text) 
     text = text.replace('.-', '.')
     
-    # Neutralize parking dimensions
+    # Neutralize parking dimensions to prevent them from being counted as area
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
-    # 2. UNIT PATTERNS
+    # 2. UNIT PATTERNS (Metric and Imperial)
     m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*कारपेट|कार्पेट)?(?:\s*एरिया|area)?'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*area)?'
     
-    # 3. FOCUS LOGIC: Ignore land/plot areas mentioned at the start
-    # Added 'मिळकतीवर' and 'येथील' to handle descriptions that start with land stats
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प|योजनेतील|नियोजित|इमारतप्रकल्पातील)'
-    parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
-    relevant_text = parts[-1] if len(parts) > 1 else text
+    # Keywords that usually indicate we are talking about the land/plot, not the flat
+    land_keywords = ["गट", "सर्व्हे", "क्षेत्र", "survey", "land", "plot", "एकूण"]
 
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन", "दर", "rate"]
-    
-    # 4. METRIC SUMMATION (SQ.MT)
+    # 3. METRIC SUMMATION (SQ.MT)
     m_vals = []
-    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', relevant_text, re.IGNORECASE):
+    # We search the WHOLE text now instead of splitting it, to avoid missing data
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
         start_idx = match.start()
-        # Look at the context immediately before the number
-        context_before = relevant_text[max(0, start_idx-40):start_idx].lower()
+        context_before = text[max(0, start_idx-50):start_idx].lower()
         
-        # FIX: Removed the restrictive 'is_rera_duplicate' bracket check
+        # VALIDATION: 
+        # 1. Ignore if clearly land-sized (e.g., 12000 sq.m)
+        # 2. Ignore if keywords like 'parking' or 'road' are immediately before it
+        exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "साईज", "size"]
+        
         if not any(word in context_before for word in exclude_keywords):
-            if 2.0 <= val < 900:
-                # Deduplication: only add if this exact value isn't already found 
-                # (handles cases where RERA area and Carpet area are identical)
-                if not m_vals or val not in m_vals:
+            # Residential carpet areas are almost always between 10 and 500 SQ.MT
+            if 10.0 <= val <= 500.0:
+                if val not in m_vals:
                     m_vals.append(val)
             
     if m_vals:
-        # Check if one value is actually the SUM of others (The "Meaning/Total" logic)
+        # If the text mentions components and then a total, return the total
+        # Example: "Carpet 50 + Terrace 8 = 58" -> return 58
         if len(m_vals) > 1:
-            for i in range(1, len(m_vals)):
-                if abs(m_vals[i] - sum(m_vals[:i])) < 0.5:
+            m_vals.sort()
+            for i in range(len(m_vals)-1, 0, -1):
+                potential_sum = sum(m_vals[:i])
+                if abs(m_vals[i] - potential_sum) < 0.5:
                     return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
-    # 5. IMPERIAL SUMMATION FALLBACK (SQ.FT)
+    # 4. IMPERIAL SUMMATION FALLBACK (SQ.FT)
     f_vals = []
-    for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', relevant_text, re.IGNORECASE):
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', text, re.IGNORECASE):
         val = float(match.group(1))
-        context_before = relevant_text[max(0, match.start()-40):match.start()].lower()
+        context_before = text[max(0, match.start()-50):match.start()].lower()
         if not any(word in context_before for word in exclude_keywords):
-            if 20.0 <= val < 9000:
-                if not f_vals or val not in f_vals:
+            # SQ.FT range for residential (approx 100 to 5000)
+            if 100.0 <= val <= 6000.0:
+                if val not in f_vals:
                     f_vals.append(val)
                 
     if f_vals:
         if len(f_vals) > 1:
-            for i in range(1, len(f_vals)):
+            f_vals.sort()
+            for i in range(len(f_vals)-1, 0, -1):
                 if abs(f_vals[i] - sum(f_vals[:i])) < 5.0:
                     return round(f_vals[i] / 10.764, 3)
         return round(sum(f_vals) / 10.764, 3)
