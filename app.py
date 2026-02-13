@@ -54,65 +54,72 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
-    # 1. CLEANUP & STANDARDIZATION
+    # 1. मजकूर स्वच्छ करणे
     text = " ".join(str(text).split())
     text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
     text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
     text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
-    text = re.sub(r'(\d),(\d)', r'\1\2', text)
-    text = text.replace('.-', '.')
-    
-    # Unit patterns (Metric and Imperial)
-    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|चौ\s*मी|चौ\s*मीटर|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*कारपेट|कार्पेट)?(?:\s*एरिया|area)?'
+    text = re.sub(r'(\d+\.\d+)\.', r'\1', text)
+    text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
+    text = re.sub(r'(\d),(\d)', r'\1\2', text) 
+    text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
+
+    # 2. युनिट पॅटर्न (Unit Patterns)
+    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*कारपेट)?(?:\s*एरिया|area)?'
     f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*area)?'
     
-    # 2. METRIC EXTRACTION
-    found_m = []
-    # We scan the whole text but apply smart filters
-    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', text, re.IGNORECASE):
-        val = float(match.group(1))
-        # Look at the 60 characters before the number for context
-        ctx = text[max(0, match.start()-60):match.start()].lower()
-        
-        # Land Filter: If 'गट' or 'सर्व्हे' is mentioned and the number is large (>250), it's land
-        is_land = (val > 250 and any(k in ctx for k in ["गट", "सर्व्हे", "survey"]))
-        
-        # Exclusion Filter: Ignore if labeled as parking or road
-        # Note: We use spaces to avoid matching "सदर" when looking for "दर"
-        exclude_kws = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "साईज", "size"]
-        is_excl = any(k in ctx for k in exclude_kws)
-        
-        if not is_excl and not is_land:
-            # Residential components (Flats/Terraces) are usually between 1.5 and 450 sq.m
-            if 1.5 <= val < 450:
-                # Deduplicate similar numbers (e.g., Carpet and RERA area mentioned twice)
-                if not any(abs(val - v) < 0.05 for v in found_m):
-                    found_m.append(val)
-    
-    # Final Metric Calculation
-    if found_m:
-        found_m.sort()
-        # If the largest number is the sum of others (Total Area label), return the largest
-        if len(found_m) > 1:
-            if abs(found_m[-1] - sum(found_m[:-1])) < 0.5:
-                return round(found_m[-1], 3)
-            return round(sum(found_m), 3)
-        return found_m[0]
+    # 3. फोकस लॉजिक: जमिनीचे क्षेत्र वगळून सदनिकेच्या मजकुराकडे वळणे
+    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प|योजनेतील|नियोजित)'
+    parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
+    relevant_text = parts[-1] if len(parts) > 1 else text
 
-    # 3. IMPERIAL FALLBACK (SQ.FT)
-    found_f = []
-    for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', text, re.IGNORECASE):
-        val = float(match.group(1))
-        ctx = text[max(0, match.start()-60):match.start()].lower()
-        if not any(k in ctx for k in ["पार्किंग", "पार्कींग", "parking"]) and 20.0 <= val < 4500:
-            if not any(abs(val - v) < 1.0 for v in found_f):
-                found_f.append(val)
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन"]
     
-    if found_f:
-        found_f.sort()
-        if len(found_f) > 1 and abs(found_f[-1] - sum(found_f[:-1])) < 5.0:
-            return round(found_f[-1] / 10.764, 3)
-        return round(sum(found_f) / 10.764, 3)
+    # 4. चौरस मीटरची बेरीज (Metric Summation)
+    m_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', relevant_text, re.IGNORECASE):
+        val = float(match.group(1))
+        start_idx = match.start()
+        context_before = relevant_text[max(0, start_idx-60):start_idx].lower()
+        
+        bracket_context = relevant_text[max(0, start_idx-150):start_idx]
+        is_rera_duplicate = "(" in bracket_context and "रेरा" in bracket_context and ")" not in bracket_context
+        
+        if not any(word in context_before for word in exclude_keywords):
+            if 2.0 <= val < 900 and not is_rera_duplicate:
+                # एकाच किमतीच्या दोन नोंदी असल्यास टाळा (उदा. ३८.९१ दोन वेळा आले असेल तर)
+                if val not in m_vals:
+                    m_vals.append(val)
+            
+    if m_vals:
+        # दुप्पट बेरीज टाळण्यासाठी 'Smart Sum' लॉजिक
+        if len(m_vals) > 1:
+            m_vals.sort()
+            # जर सर्वात मोठी संख्या इतर सर्व संख्यांच्या बेरजेइतकी असेल (उदा. ३१.६४ + २.४० + ५.५० = ३८.९१)
+            # तर फक्त ती मोठी संख्या (३८.९१) ग्राह्य धरा
+            largest = m_vals[-1]
+            others_sum = sum(m_vals[:-1])
+            if abs(largest - others_sum) < 0.5: # 0.5 ची सूट राउंडिंग फरकासाठी
+                return round(largest, 3)
+            
+        return round(sum(m_vals), 3)
+
+    # 5. चौरस फूट (Imperial Fallback)
+    f_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', relevant_text, re.IGNORECASE):
+        val = float(match.group(1))
+        context_before = relevant_text[max(0, match.start()-60):match.start()].lower()
+        if not any(word in context_before for word in exclude_keywords):
+            if 20.0 <= val < 9000: f_vals.append(val)
+                
+    if f_vals:
+        if len(f_vals) > 1:
+            f_vals.sort()
+            largest = f_vals[-1]
+            others_sum = sum(f_vals[:-1])
+            if abs(largest - others_sum) < 5.0:
+                return round(largest / 10.764, 3)
+        return round(sum(f_vals) / 10.764, 3)
         
     return 0.0
     
