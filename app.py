@@ -54,7 +54,7 @@ Atharva Joshi"""
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
     
-    # 1. मजकूर स्वच्छ करणे
+    # 1. CLEANUP: Standardize spaces and common Marathi typos
     text = " ".join(str(text).split())
     text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
     text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
@@ -64,61 +64,71 @@ def extract_area_logic(text):
     text = re.sub(r'(\d),(\d)', r'\1\2', text) 
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
-    # 2. युनिट पॅटर्न (Unit Patterns)
-    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*कारपेट)?(?:\s*एरिया|area)?'
-    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फू|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*area)?'
+    # 2. UNIT PATTERNS (Metric & Imperial)
+    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*(?:कारपेट|कार्पेट|चटई क्षेत्र|एकूण क्षेत्र))?(?:\s*(?:एरिया|area|क्षेत्र))?'
+    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फु[टत]?|चौ[\.\s]*फू[टत]?|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*(?:area|क्षेत्र))?'
     
-    # 3. फोकस लॉजिक: जमिनीचे क्षेत्र वगळून सदनिकेच्या मजकुराकडे वळणे
-    focus_keywords = r'(?:सदनिका|फ्लॅट|युनिट|टावर|टॉवर|flat|unit|tower|इमारतीमधील|येथील|गृहप्रकल्पातील|इमारत|प्रकल्पातील|मिळकतीवरील|मिळकतीवर|प्रिस्टीन|बिल्डींग|प्रकल्प|योजनेतील|नियोजित)'
-    parts = re.split(focus_keywords, text, flags=re.IGNORECASE)
-    relevant_text = parts[-1] if len(parts) > 1 else text
+    # 3. FOCUS LOGIC: Isolate flat details from land area stats
+    boundary_keywords = r'(?:येथील|मिळकतीवर|मिळकतीवरील|बांधण्यात|बांधत|प्रकल्पातील|गृहप्रकल्पातील|इमारतप्रकल्पातील|योजनेतील|नियोजित|इमारतीमधील|बिल्डींग|बिल्डिंग|प्रकल्प|टावर|टॉवर|प्रिस्टीन|सेक्टर|क्लस्टर)'
+    parts = re.split(boundary_keywords, text, flags=re.IGNORECASE)
+    relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
 
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन"]
+    # Keywords that usually indicate we should ignore a specific number
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन", "दर", "rate", "७/१२", "नाकाश"]
     
-    # 4. चौरस मीटरची बेरीज (Metric Summation)
+    # 4. METRIC SUMMATION (SQ.MT)
     m_vals = []
-    for match in re.finditer(rf'(\d+\.?\d*)\s*{m_unit}', relevant_text, re.IGNORECASE):
+    total_area_found = None
+
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
+        full_match_text = match.group(0).lower()
         start_idx = match.start()
         context_before = relevant_text[max(0, start_idx-60):start_idx].lower()
-        
         bracket_context = relevant_text[max(0, start_idx-150):start_idx]
+        
+        # Avoid duplicate Rera mentions in brackets
         is_rera_duplicate = "(" in bracket_context and "रेरा" in bracket_context and ")" not in bracket_context
         
         if not any(word in context_before for word in exclude_keywords):
             if 2.0 <= val < 900 and not is_rera_duplicate:
-                # एकाच किमतीच्या दोन नोंदी असल्यास टाळा (उदा. ३८.९१ दोन वेळा आले असेल तर)
-                if val not in m_vals:
+                # NEW: Capture "Total Area" specifically
+                if "एकूण क्षेत्र" in context_before or "एकूण क्षेत्र" in full_match_text:
+                    total_area_found = val
+                
+                if not m_vals or val != m_vals[-1]:
                     m_vals.append(val)
             
+    # PRIORITY 1: Use explicit "Total Area" if found
+    if total_area_found:
+        return round(total_area_found, 3)
+
+    # PRIORITY 2: Component Summation logic
     if m_vals:
-        # दुप्पट बेरीज टाळण्यासाठी 'Smart Sum' लॉजिक
         if len(m_vals) > 1:
             m_vals.sort()
-            # जर सर्वात मोठी संख्या इतर सर्व संख्यांच्या बेरजेइतकी असेल (उदा. ३१.६४ + २.४० + ५.५० = ३८.९१)
-            # तर फक्त ती मोठी संख्या (३८.९१) ग्राह्य धरा
-            largest = m_vals[-1]
-            others_sum = sum(m_vals[:-1])
-            if abs(largest - others_sum) < 0.5: # 0.5 ची सूट राउंडिंग फरकासाठी
-                return round(largest, 3)
-            
+            for i in range(1, len(m_vals)):
+                if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
+                    return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
-    # 5. चौरस फूट (Imperial Fallback)
+    # 5. IMPERIAL SUMMATION FALLBACK (SQ.FT)
     f_vals = []
-    for match in re.finditer(rf'(\d+\.?\d*)\s*{f_unit}', relevant_text, re.IGNORECASE):
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
-        context_before = relevant_text[max(0, match.start()-60):match.start()].lower()
+        start_idx = match.start()
+        context_before = relevant_text[max(0, match.start()-60):start_idx].lower()
         if not any(word in context_before for word in exclude_keywords):
-            if 20.0 <= val < 9000: f_vals.append(val)
+            if 20.0 <= val < 9000:
+                if not f_vals or val != f_vals[-1]:
+                    f_vals.append(val)
                 
     if f_vals:
         if len(f_vals) > 1:
             f_vals.sort()
-            largest = f_vals[-1]
-            others_sum = sum(f_vals[:-1])
-            if abs(largest - others_sum) < 5.0:
-                return round(largest / 10.764, 3)
+            for i in range(1, len(f_vals)):
+                if abs(f_vals[i] - sum(f_vals[:i])) < 5.0:
+                    return round(f_vals[i] / 10.764, 3)
         return round(sum(f_vals) / 10.764, 3)
         
     return 0.0
@@ -151,46 +161,35 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
         white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
         for i in range(2, len(df) + 3):
-            # Identifying unique groups for merging
             curr_loc = df.iloc[i-2, 0] if i-2 < len(df) else None
             prev_loc = df.iloc[i-3, 0] if i-3 >= 0 else None
-            
             curr_prop = df.iloc[i-2, 1] if i-2 < len(df) else None
             prev_prop = df.iloc[i-3, 1] if i-3 >= 0 else None
             
-            # 1. Handle Property Change (Color + Property Merge + Total Count Merge)
             if curr_prop != prev_prop and i > 2:
                 fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
                 for r in range(start_row_prop, i):
-                    # Color from Column 2 (Property) to end
                     for c in range(2, last_col + 1):
                         worksheet.cell(row=r, column=c).fill = fill
                 
                 if i-1 > start_row_prop:
-                    # Merge Property Name (Col 2)
                     worksheet.merge_cells(start_row=start_row_prop, start_column=2, end_row=i-1, end_column=2)
-                    # Merge Total Count (Last Col)
                     worksheet.merge_cells(start_row=start_row_prop, start_column=last_col, end_row=i-1, end_column=last_col)
                 
                 start_row_prop = i
                 color_idx += 1
 
-            # 2. Handle Location Merge (Stay White)
             if curr_loc != prev_loc and i > 2:
                 for r in range(start_row_loc, i):
                     worksheet.cell(row=r, column=1).fill = white_fill
-                
                 if i-1 > start_row_loc:
                     worksheet.merge_cells(start_row=start_row_loc, start_column=1, end_row=i-1, end_column=1)
-                
                 start_row_loc = i
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
 st.markdown("<div style='margin-top: -15px; margin-bottom: 10px;'><span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'><u><strong>NOTE :-</strong> Please cross-check the report manually.</u></span></div>", unsafe_allow_html=True)
-st.markdown("[To get the Report from the Summary click here.](https://marketreport.streamlit.app/)")
-st.divider()
 
 st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
@@ -202,6 +201,7 @@ uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     clean_cols = {c.lower().strip(): c for c in df.columns}
+    
     desc_col = clean_cols.get('property description')
     cons_col = clean_cols.get('consideration value')
     prop_col = clean_cols.get('property')
@@ -230,7 +230,6 @@ if uploaded_file:
             ).reset_index()
             
             summary = summary.merge(project_counts, on=prop_col, how='left')
-            summary['Last_Date'] = pd.to_datetime(summary['Last_Date'], errors='coerce')
             summary['Last_Date'] = summary['Last_Date'].apply(lambda x: x.strftime('%b-%Y') if pd.notnull(x) else "N/A")
             
             summary.columns = ['Location', 'Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Last Completion Date', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']
