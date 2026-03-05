@@ -192,7 +192,7 @@ st.title("Spydarr Dashboard")
 st.markdown("<div style='margin-top: -15px; margin-bottom: 10px;'><span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'><u><strong>NOTE :-</strong> Please cross-check the report manually.</u></span></div>", unsafe_allow_html=True)
 
 st.sidebar.header("Calculation Settings")
-loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
+loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.40, step=0.001, format="%.3f")
 t1 = st.sidebar.number_input("1 BHK Threshold", value=600)
 t2 = st.sidebar.number_input("2 BHK Threshold", value=850)
 t3 = st.sidebar.number_input("3 BHK Threshold", value=1100)
