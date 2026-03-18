@@ -4,7 +4,7 @@ import re
 import io
 import smtplib
 import json
-from openai import OpenAI
+from groq import Groq  # Switched from OpenAI
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
@@ -16,18 +16,17 @@ from openpyxl.styles import Alignment, PatternFill, Border, Side
 SENDER_EMAIL = "atharvaujoshi@gmail.com"
 SENDER_NAME = "Spydarr Market Research" 
 EMAIL_PASS = st.secrets["EMAIL_PASSWORD"]
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 VALID_USER = st.secrets["APP_USERNAME"]
 VALID_PASS = st.secrets["APP_PASSWORD_LOGIN"]
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Initialize Groq Client
+client = Groq(api_key=GROQ_API_KEY)
 
 # --- LOGIN SYSTEM ---
 def check_password():
-    """Returns True if the user had the correct password."""
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
-
     if st.session_state["authenticated"]:
         return True
 
@@ -43,40 +42,50 @@ def check_password():
                 st.error("Invalid Username or Password")
     return False
 
-# --- AI EXTRACTION LOGIC ---
-def extract_areas_with_ai(descriptions, batch_size=15):
+# --- AI EXTRACTION LOGIC (GROQ) ---
+def extract_areas_with_ai(descriptions, batch_size=10):
+    """Processes descriptions using Groq Llama-3.3 for lightning speed."""
     all_extracted_values = []
     progress_bar = st.progress(0)
+    
     for i in range(0, len(descriptions), batch_size):
         batch = descriptions[i:i + batch_size]
+        
         prompt = f"""
         Extract the TOTAL Carpet Area in Square METERS from these {len(batch)} property descriptions.
         Rules:
-        1. Look for 'Carpet Area', 'Chatai Kshetra', or 'RERA Area'.
-        2. Sum 'Carpet' + 'Balcony' + 'Terrace' + 'Utility' to get total.
+        1. Identify 'Carpet Area', 'Chatai Kshetra', or 'RERA Area'.
+        2. Sum 'Carpet' + 'Balcony' + 'Terrace' + 'Utility' if listed separately.
         3. Convert Sq.Ft to Sq.Mt (Value / 10.764).
-        4. Return ONLY a JSON list of floats. 
+        4. Return ONLY a valid JSON list of floats.
         5. If no area found, use 0.0.
         
         Descriptions: {json.dumps(batch)}
         """
+        
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
+            # Using llama-3.3-70b-versatile for high intelligence/extraction accuracy
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "You are a real estate data specialist. Output only valid JSON lists."},
+                    {"role": "system", "content": "You are a real estate data specialist. Output ONLY a raw JSON list of numbers. No text, no explanation."},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0
             )
-            res_content = json.loads(response.choices[0].message.content)
+            
+            res_content = json.loads(completion.choices[0].message.content)
+            # Handle potential JSON structures (list vs dict)
             values = list(res_content.values())[0] if isinstance(res_content, dict) else res_content
             all_extracted_values.extend(values)
+            
         except Exception as e:
-            st.error(f"AI Batch Error: {e}")
+            st.error(f"Groq API Error in batch {i}: {e}")
             all_extracted_values.extend([0.0] * len(batch))
+            
         progress_bar.progress(min((i + batch_size) / len(descriptions), 1.0))
+        
     return all_extracted_values
 
 # --- EMAIL LOGIC ---
@@ -94,6 +103,7 @@ def send_email(recipient_email, excel_data, filename):
         encoders.encode_base64(part)
         part.add_header('Content-Disposition', f"attachment; filename={filename}")
         msg.attach(part)
+        
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(SENDER_EMAIL, EMAIL_PASS)
@@ -149,15 +159,14 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
 
 # --- MAIN APP FUNCTION ---
 def main_app():
-    st.set_page_config(page_title="Spydarr AI Dashboard", layout="wide")
+    st.set_page_config(page_title="Spydarr Groq AI", layout="wide")
     
-    # Sidebar Logout
     if st.sidebar.button("Logout"):
         st.session_state["authenticated"] = False
         st.rerun()
 
-    st.title("Spydarr AI Dashboard 🚀")
-    st.info("Now powered by OpenAI for 100% extraction accuracy.")
+    st.title("Spydarr AI Dashboard (Groq Edition) ⚡")
+    st.info("Using Llama-3.3-70B via Groq for high-speed market research.")
 
     st.sidebar.header("Calculation Settings")
     loading_factor = st.sidebar.number_input("Loading Factor", value=1.35, format="%.3f")
@@ -169,13 +178,15 @@ def main_app():
         df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         clean_cols = {c.lower().strip(): c for c in df.columns}
         
-        desc_col, cons_col = clean_cols.get('property description'), clean_cols.get('consideration value')
-        prop_col, date_col = clean_cols.get('property'), clean_cols.get('completion date')
+        desc_col = clean_cols.get('property description')
+        cons_col = clean_cols.get('consideration value')
+        prop_col = clean_cols.get('property')
+        date_col = clean_cols.get('completion date')
         loc_col = clean_cols.get('micromarket')
 
         if all([desc_col, cons_col, prop_col, date_col, loc_col]):
             if st.button("Run AI Analysis"):
-                with st.spinner('AI analyzing descriptions...'):
+                with st.spinner('Groq is crunching the data...'):
                     descriptions = df[desc_col].astype(str).tolist()
                     df['Carpet Area (SQ.MT)'] = extract_areas_with_ai(descriptions)
                     df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
