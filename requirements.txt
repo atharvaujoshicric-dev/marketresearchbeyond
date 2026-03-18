@@ -3,3 +3,8 @@ pandas
 openpyxl
 streamlit-modal
 yagmail
+
+streamlit
+pandas
+openai
+openpyxl
