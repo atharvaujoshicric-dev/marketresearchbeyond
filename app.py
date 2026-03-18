@@ -1,11 +1,10 @@
-import time
 import streamlit as st
 import pandas as pd
 import re
 import io
 import smtplib
-import json
-from groq import Groq  # Switched from OpenAI
+import time
+from groq import Groq
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
@@ -13,101 +12,18 @@ from email.utils import formataddr
 from email import encoders
 from openpyxl.styles import Alignment, PatternFill, Border, Side
 
-# --- CONFIGURATION FROM SECRETS ---
+# --- API CONFIGURATION ---
+try:
+    GROQ_CLIENT = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except Exception:
+    st.error("Groq API Key not found in Secrets. Fallback to Regex only.")
+    GROQ_CLIENT = None
+
+# --- EMAIL CONFIGURATION ---
 SENDER_EMAIL = "atharvaujoshi@gmail.com"
 SENDER_NAME = "Spydarr Market Research" 
-EMAIL_PASS = st.secrets["EMAIL_PASSWORD"]
-GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-VALID_USER = st.secrets["APP_USERNAME"]
-VALID_PASS = st.secrets["APP_PASSWORD_LOGIN"]
+APP_PASSWORD = "nybl zsnx zvdw edqr"
 
-# Initialize Groq Client
-client = Groq(api_key=GROQ_API_KEY)
-
-# --- LOGIN SYSTEM ---
-def check_password():
-    if "authenticated" not in st.session_state:
-        st.session_state["authenticated"] = False
-    if st.session_state["authenticated"]:
-        return True
-
-    with st.container():
-        st.title("🔐 Spydarr Login")
-        user_input = st.text_input("Username")
-        pass_input = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if user_input == VALID_USER and pass_input == VALID_PASS:
-                st.session_state["authenticated"] = True
-                st.rerun()
-            else:
-                st.error("Invalid Username or Password")
-    return False
-
-# --- AI EXTRACTION LOGIC (GROQ) ---
-def extract_areas_with_ai(descriptions, batch_size=5): # Increased batch size back to 5 for speed
-    """Extracts raw components with AI and solves math with Python for 100% reliability."""
-    all_extracted_values = []
-    progress_bar = st.progress(0)
-    
-    for i in range(0, len(descriptions), batch_size):
-        raw_batch = descriptions[i:i + batch_size]
-        # Keep it short to save speed and tokens
-        batch = [" ".join(str(d)[:500].split()) for d in raw_batch]
-        
-        prompt = f"""
-        Extract the area components for {len(batch)} property descriptions.
-        For each, identify: 
-        1. Is the unit 'sq.ft' or 'sq.mt'?
-        2. What is the 'carpet' value?
-        3. What are the 'other' values (balcony, terrace, utility)? 
-        
-        JSON Format: {{"data": [{{"unit": "sq.ft", "carpet": 500, "other": [20, 10]}}]}}
-        
-        Descriptions: {json.dumps(batch)}
-        """
-        
-        try:
-            completion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[
-                    {"role": "system", "content": "You are a data extractor. You do not do math. You only find and list the numbers found in the text."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=400 # Small response = fast speed
-            )
-            
-            res_content = json.loads(completion.choices[0].message.content)
-            items = res_content.get("data", [])
-            
-            for item in items:
-                # --- PYTHON HANDLES THE MATH ---
-                unit = str(item.get("unit", "sq.mt")).lower()
-                carpet = float(item.get("carpet", 0))
-                others = sum([float(x) for x in item.get("other", []) if isinstance(x, (int, float))])
-                
-                total = carpet + others
-                
-                # Convert to Sq.Mt if needed
-                if "ft" in unit:
-                    total = total / 10.764
-                
-                all_extracted_values.append(round(total, 3))
-            
-            # Tiny delay just for safety
-            time.sleep(0.5) 
-            
-        except Exception as e:
-            st.warning(f"Batch {i} failed. Error: {e}")
-            while len(all_extracted_values) < (i + len(batch)):
-                all_extracted_values.append(0.0)
-            
-        progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
-        
-    return all_extracted_values
-    
-# --- EMAIL LOGIC ---
 def send_email(recipient_email, excel_data, filename):
     try:
         recipient_name = recipient_email.split('@')[0].replace('.', ' ').title()
@@ -115,7 +31,14 @@ def send_email(recipient_email, excel_data, filename):
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
         msg['Subject'] = "Spydarr Market Research Summary"
-        body = f"Dear {recipient_name},\n\nPlease find the attached report.\n\nRegards,\nAtharva Joshi"
+        
+        body = f"""Dear {recipient_name},
+
+Please find the attached professional property analysis report generated by the dashboard.
+
+Regards,
+Atharva Joshi"""
+
         msg.attach(MIMEText(body, 'plain'))
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
@@ -125,7 +48,7 @@ def send_email(recipient_email, excel_data, filename):
         
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
-        server.login(SENDER_EMAIL, EMAIL_PASS)
+        server.login(SENDER_EMAIL, APP_PASSWORD)
         server.send_message(msg)
         server.quit()
         return True
@@ -133,9 +56,73 @@ def send_email(recipient_email, excel_data, filename):
         st.error(f"Error sending email: {e}")
         return False
 
-# --- FORMATTING & CONFIG ---
+def extract_area_logic(text):
+    """Your Original 95% Accuracy Regex Logic (Fallback)"""
+    if pd.isna(text) or text == "": return 0.0
+    text = " ".join(str(text).split())
+    text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
+    text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
+    text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
+    text = re.sub(r'(\d+\.\d+)\.', r'\1', text)
+    text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
+    text = re.sub(r'(\d),(\d)', r'\1\2', text) 
+    text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
+
+    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*(?:कारपेट|कार्पेट|चटई क्षेत्र|एकूण क्षेत्र))?(?:\s*(?:एरिया|area|क्षेत्र))?'
+    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फु[टत]?|चौ[\.\s]*फू[टत]?|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*(?:area|क्षेत्र))?'
+    
+    boundary_keywords = r'(?:येथील|मिळकतीवर|मिळकतीवरील|बांधण्यात|बांधत|प्रकल्पातील|गृहप्रकल्पातील|इमारतप्रकल्पातील|योजनेतील|नियोजित|इमारतीमधील|बिल्डींग|बिल्डिंग|प्रकल्प|टावर|टॉवर|प्रिस्टीन|सेक्टर|क्लस्टर)'
+    parts = re.split(boundary_keywords, text, flags=re.IGNORECASE)
+    relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन", "दर", "rate", "७/१२", "नाकाश"]
+    
+    m_vals = []
+    total_area_found = None
+
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', relevant_text, re.IGNORECASE):
+        val = float(match.group(1))
+        full_match_text = match.group(0).lower()
+        context_before = relevant_text[max(0, match.start()-60):match.start()].lower()
+        if not any(word in context_before for word in exclude_keywords):
+            if 2.0 <= val < 900:
+                if "एकूण क्षेत्र" in context_before or "एकूण क्षेत्र" in full_match_text:
+                    total_area_found = val
+                if not m_vals or val != m_vals[-1]: m_vals.append(val)
+    
+    if total_area_found: return round(total_area_found, 3)
+    if m_vals:
+        m_vals.sort()
+        for i in range(1, len(m_vals)):
+            if abs(m_vals[i] - sum(m_vals[:i])) < 1.0: return round(m_vals[i], 3)
+        return round(sum(m_vals), 3)
+
+    return 0.0
+
+@st.cache_data(show_spinner=False)
+def extract_area_ai_enhanced(text):
+    """LLM Extraction with Regex Fallback"""
+    if pd.isna(text) or text == "" or not GROQ_CLIENT:
+        return extract_area_logic(text)
+
+    try:
+        # Limit to 10 tokens to save cost/time as we only need the number
+        chat_completion = GROQ_CLIENT.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "Extract total NET CARPET AREA in SQ.METERS. If SQ.FT is found, divide by 10.764. Return ONLY the number. No text."},
+                {"role": "user", "content": text}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0,
+            max_tokens=15,
+        )
+        response = chat_completion.choices[0].message.content.strip()
+        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", response)
+        return float(numbers[0]) if numbers else extract_area_logic(text)
+    except Exception:
+        return extract_area_logic(text)
+
 def determine_config(area, t1, t2, t3):
-    if area <= 0: return "N/A"
+    if area == 0: return "N/A"
     if area < t1: return "1 BHK"
     elif area < t2: return "2 BHK"
     elif area < t3: return "3 BHK"
@@ -144,6 +131,7 @@ def determine_config(area, t1, t2, t3):
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
+    worksheet.freeze_panes = "A2"
     center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
@@ -157,6 +145,8 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     if is_summary:
         color_idx, start_row_prop, start_row_loc = 0, 2, 2
         last_col = len(df.columns)
+        white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
         for i in range(2, len(df) + 3):
             curr_loc = df.iloc[i-2, 0] if i-2 < len(df) else None
             prev_loc = df.iloc[i-3, 0] if i-3 >= 0 else None
@@ -170,73 +160,86 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                         worksheet.cell(row=r, column=c).fill = fill
                 if i-1 > start_row_prop:
                     worksheet.merge_cells(start_row=start_row_prop, start_column=2, end_row=i-1, end_column=2)
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=last_col, end_row=i-1, end_column=last_col)
                 start_row_prop, color_idx = i, color_idx + 1
+
             if curr_loc != prev_loc and i > 2:
+                for r in range(start_row_loc, i):
+                    worksheet.cell(row=r, column=1).fill = white_fill
                 if i-1 > start_row_loc:
                     worksheet.merge_cells(start_row=start_row_loc, start_column=1, end_row=i-1, end_column=1)
                 start_row_loc = i
 
-# --- MAIN APP FUNCTION ---
-def main_app():
-    st.set_page_config(page_title="Spydarr Groq AI", layout="wide")
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
+st.title("Spydarr Dashboard")
+st.markdown("<div style='margin-bottom: 10px;'><span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'><strong>AI-POWERED:</strong> Utilizing Groq Llama-3 for precision.</span></div>", unsafe_allow_html=True)
+
+st.sidebar.header("Calculation Settings")
+loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.40, step=0.001, format="%.3f")
+t1 = st.sidebar.number_input("1 BHK Threshold", value=600)
+t2 = st.sidebar.number_input("2 BHK Threshold", value=850)
+t3 = st.sidebar.number_input("3 BHK Threshold", value=1100)
+
+uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
+if uploaded_file:
+    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+    clean_cols = {c.lower().strip(): c for c in df.columns}
     
-    if st.sidebar.button("Logout"):
-        st.session_state["authenticated"] = False
-        st.rerun()
+    desc_col = clean_cols.get('property description')
+    cons_col = clean_cols.get('consideration value')
+    prop_col = clean_cols.get('property')
+    date_col = clean_cols.get('completion date')
+    loc_col = clean_cols.get('micromarket')
+    
+    if desc_col and cons_col and prop_col and date_col and loc_col:
+        if st.button("Generate AI Report"):
+            with st.spinner('AI analyzing property descriptions...'):
+                areas = []
+                progress_bar = st.progress(0)
+                total_rows = len(df)
+                
+                for idx, row in df.iterrows():
+                    areas.append(extract_area_ai_enhanced(row[desc_col]))
+                    # Throttling to avoid rate limits
+                    if idx % 10 == 0:
+                        progress_bar.progress((idx + 1) / total_rows)
+                        time.sleep(0.1) 
+                
+                df['Carpet Area (SQ.MT)'] = areas
+                df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
+                df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
+                df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
+                df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
+                df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+                
+                valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
+                project_counts = valid_df.groupby(prop_col).size().reset_index(name='Total Count')
+                
+                summary = valid_df.groupby([loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
+                    Last_Date=(date_col, 'max'),
+                    Min_APR=('APR', 'min'), 
+                    Max_APR=('APR', 'max'), 
+                    Avg_APR=('APR', 'mean'),
+                    Median_APR=('APR', 'median'),
+                    Property_Count=(prop_col, 'count')
+                ).reset_index()
+                
+                summary = summary.merge(project_counts, on=prop_col, how='left')
+                summary['Last_Date'] = summary['Last_Date'].apply(lambda x: x.strftime('%b-%Y') if pd.notnull(x) else "N/A")
+                summary.columns = ['Location', 'Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Last Completion Date', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']
+                summary = summary[['Location', 'Property', 'Last Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']]
 
-    st.title("Spydarr AI Dashboard (Groq Edition) ⚡")
-    st.info("Using Llama-3.3-70B via Groq for high-speed market research.")
-
-    st.sidebar.header("Calculation Settings")
-    loading_factor = st.sidebar.number_input("Loading Factor", value=1.35, format="%.3f")
-    t1, t2, t3 = st.sidebar.number_input("1BHK Thresh.", value=600), st.sidebar.number_input("2BHK Thresh.", value=850), st.sidebar.number_input("3BHK Thresh.", value=1100)
-
-    uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
-
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-        clean_cols = {c.lower().strip(): c for c in df.columns}
-        
-        desc_col = clean_cols.get('property description')
-        cons_col = clean_cols.get('consideration value')
-        prop_col = clean_cols.get('property')
-        date_col = clean_cols.get('completion date')
-        loc_col = clean_cols.get('micromarket')
-
-        if all([desc_col, cons_col, prop_col, date_col, loc_col]):
-            if st.button("Run AI Analysis"):
-                with st.spinner('Groq is crunching the data...'):
-                    descriptions = df[desc_col].astype(str).tolist()
-                    df['Carpet Area (SQ.MT)'] = extract_areas_with_ai(descriptions)
-                    df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
-                    df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
-                    df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
-                    df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
-                    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-                    
-                    valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([loc_col, prop_col, 'Configuration'])
-                    summary = valid_df.groupby([loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
-                        Last_Date=(date_col, 'max'), Min_APR=('APR', 'min'), Max_APR=('APR', 'max'),
-                        Avg_APR=('APR', 'mean'), Median_APR=('APR', 'median'), Count=(prop_col, 'count')
-                    ).reset_index()
-                    
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
-                        apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
-                    
-                    st.session_state['report'] = output.getvalue()
-                    st.success("Analysis Complete!")
-
-            if 'report' in st.session_state:
-                recipient = st.text_input("Recipient Username", placeholder="e.g. atharva.joshi")
-                if st.button("Email Report") and recipient:
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
+                    apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
+                
+                st.success("Analysis Complete!")
+                recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
+                if st.button("Send to Email") and recipient:
                     full_email = f"{recipient.strip().lower()}@beyondwalls.com"
-                    if send_email(full_email, st.session_state['report'], "Spydarr_Market_Report.xlsx"):
+                    if send_email(full_email, output.getvalue(), "Spydarr_Market_Summary.xlsx"):
                         st.success(f"Report sent to {full_email}")
-        else:
-            st.error("Missing required columns in uploaded file.")
-
-# --- EXECUTION ---
-if check_password():
-    main_app()
+    else:
+        st.error("Missing required columns: Micromarket, Property Description, Consideration Value, Property, Completion Date.")
