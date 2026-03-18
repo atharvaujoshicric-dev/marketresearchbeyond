@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import pandas as pd
 import re
@@ -43,36 +44,31 @@ def check_password():
     return False
 
 # --- AI EXTRACTION LOGIC (GROQ) ---
-import time # Add this at the very top of your file with other imports
-
-def extract_areas_with_ai(descriptions, batch_size=3): # Reduced batch_size to 3
-    """Processes descriptions using Groq with rate-limit handling."""
+def extract_areas_with_ai(descriptions, batch_size=3):
+    """Processes descriptions with strict instruction to solve math before returning JSON."""
     all_extracted_values = []
     progress_bar = st.progress(0)
     
     for i in range(0, len(descriptions), batch_size):
-        batch = descriptions[i:i + batch_size]
-        
-        # Optimization: Truncate descriptions if they are excessively long 
-        # (Most area info is in the first 1000 chars)
-        cleaned_batch = [d[:1000] for d in batch]
+        batch = [str(d)[:1000] for d in descriptions[i:i + batch_size]]
         
         prompt = f"""
-        Extract the TOTAL Carpet Area in Square METERS from these {len(cleaned_batch)} property descriptions.
-        Rules:
-        1. Identify 'Carpet Area', 'Chatai Kshetra', or 'RERA Area'.
-        2. Sum 'Carpet' + 'Balcony' + 'Terrace' + 'Utility'.
-        3. Convert Sq.Ft to Sq.Mt (Value / 10.764).
-        4. Return ONLY a valid JSON list of floats.
+        Extract the TOTAL Carpet Area in Square METERS from these {len(batch)} property descriptions.
         
-        Descriptions: {json.dumps(cleaned_batch)}
+        STRICT RULES:
+        1. Sum 'Carpet' + 'Balcony' + 'Terrace' + 'Utility' yourself. 
+        2. If input is Sq.Ft, convert to Sq.Mt (Value / 10.764).
+        3. OUTPUT ONLY FINAL NUMBERS. Do not include math like '31.83 + 7.02'.
+        4. Return a JSON object with a key "areas" containing a list of floats.
+        
+        Descriptions: {json.dumps(batch)}
         """
         
         try:
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "You are a real estate data specialist. Output ONLY a raw JSON list of numbers."},
+                    {"role": "system", "content": "You are a calculator. You perform all additions and conversions and return ONLY final float values in JSON."},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
@@ -80,28 +76,25 @@ def extract_areas_with_ai(descriptions, batch_size=3): # Reduced batch_size to 3
             )
             
             res_content = json.loads(completion.choices[0].message.content)
-            values = list(res_content.values())[0] if isinstance(res_content, dict) else res_content
-            all_extracted_values.extend(values)
+            # Ensure we get a flat list of numbers
+            values = res_content.get("areas", [])
+            if not values and isinstance(res_content, dict):
+                values = list(res_content.values())[0]
             
-            # --- RATE LIMIT GUARD ---
-            # Wait 2 seconds between batches to stay under the 12,000 TPM limit
-            time.sleep(2) 
+            # Ensure they are floats (not strings or equations)
+            clean_values = [float(v) if isinstance(v, (int, float)) else 0.0 for v in values]
+            all_extracted_values.extend(clean_values)
+            
+            time.sleep(1.5) # Prevent Rate Limit
             
         except Exception as e:
-            if "413" in str(e) or "rate_limit" in str(e).lower():
-                st.warning(f"Rate limit hit at batch {i}. Pausing for 10 seconds...")
-                time.sleep(10) # Longer pause if we actually hit the wall
-                # Optional: You could retry the batch here
-            else:
-                st.error(f"Groq API Error in batch {i}: {e}")
-            
-            # Fill with 0.0 to keep dataframe alignment if batch fails
-            if len(all_extracted_values) < (i + len(batch)):
-                all_extracted_values.extend([0.0] * ( (i + len(batch)) - len(all_extracted_values) ))
+            st.error(f"Batch {i} Error: {e}")
+            all_extracted_values.extend([0.0] * len(batch))
             
         progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
         
     return all_extracted_values
+    
 # --- EMAIL LOGIC ---
 def send_email(recipient_email, excel_data, filename):
     try:
