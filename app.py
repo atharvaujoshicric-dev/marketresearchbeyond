@@ -44,28 +44,30 @@ def check_password():
     return False
 
 # --- AI EXTRACTION LOGIC (GROQ) ---
-def extract_areas_with_ai(descriptions, batch_size=3):
-    """Processes descriptions with 8B model using few-shot examples for strict JSON."""
+def extract_areas_with_ai(descriptions, batch_size=2): # Dropped to 2 for even better focus
+    """Processes descriptions by forcing internal calculation before JSON generation."""
     all_extracted_values = []
     progress_bar = st.progress(0)
     
     for i in range(0, len(descriptions), batch_size):
         raw_batch = descriptions[i:i + batch_size]
-        # Clean text and limit to 400 chars to save input tokens
-        batch = [" ".join(str(d)[:400].split()) for d in raw_batch]
+        # Taking slightly more context (600 chars) in case the numbers are deep in the text
+        batch = [" ".join(str(d)[:600].split()) for d in raw_batch]
         
         prompt = f"""
-        Extract TOTAL Carpet Area in Sq.Mt for {len(batch)} properties.
+        Extract the TOTAL Carpet Area in Square METERS for these {len(batch)} properties.
         
-        CRITICAL RULES:
-        - If you see "48.50 + 8.69", you MUST output "57.19".
-        - If you see "Sq.Ft", you MUST divide by 10.764.
-        - NEVER include "+" or "/" in the JSON.
+        INSTRUCTIONS:
+        1. Identify all area components (Carpet, Balcony, Terrace, etc.).
+        2. If values are in Sq.Ft, convert to Sq.Mt by dividing by 10.764.
+        3. ADD ALL COMPONENTS TOGETHER to get one single float.
+        4. In your final JSON output, you MUST only provide the final float result. 
+        5. DO NOT include symbols like '+', '/', or '*' in the JSON values.
         
-        EXAMPLE INPUT: ["Carpet 50.0 + Balcony 5.0", "750 Sq.Ft"]
-        EXAMPLE OUTPUT: {{"areas": [55.0, 69.67]}}
+        Example Input: ["Carpet 45.0 + Balcony 5.0", "1000 Sq.Ft"]
+        Example Output: {{"areas": [50.0, 92.90]}}
         
-        REAL DATA TO PROCESS:
+        Data to process:
         {json.dumps(batch)}
         """
         
@@ -73,12 +75,15 @@ def extract_areas_with_ai(descriptions, batch_size=3):
             completion = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": "You are a headless data parser. You perform all arithmetic internally. You return ONLY a JSON object with final float values. No math symbols allowed."},
+                    {
+                        "role": "system", 
+                        "content": "You are a specialized real estate parser. You solve all math internally. Your final output is strictly a JSON object with final float numbers only. If you output a math symbol like '+' or '/', the system will crash."
+                    },
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0,
-                max_tokens=500
+                max_tokens=600
             )
             
             res_content = json.loads(completion.choices[0].message.content)
@@ -87,21 +92,20 @@ def extract_areas_with_ai(descriptions, batch_size=3):
             clean_values = []
             for v in values:
                 try:
-                    # Force conversion to float. If AI sent "48+8", this will fail 
-                    # and we catch it in the except block.
+                    # Final check: float() will only work if it's a clean number
                     clean_values.append(float(v))
                 except:
                     clean_values.append(0.0)
             
-            # Pad if AI missed a row
+            # Ensure the output list matches the input list size
             while len(clean_values) < len(batch):
                 clean_values.append(0.0)
                 
             all_extracted_values.extend(clean_values[:len(batch)])
-            time.sleep(1.5) # Safe pause
+            time.sleep(2.0) # Increased delay to prevent token-per-minute spikes
             
         except Exception as e:
-            st.warning(f"Batch {i} skipped due to formatting. Error: {e}")
+            st.warning(f"Batch {i} failed. Error: {e}")
             all_extracted_values.extend([0.0] * len(batch))
             
         progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
