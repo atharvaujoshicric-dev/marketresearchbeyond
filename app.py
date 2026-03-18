@@ -118,8 +118,47 @@ Return JSON only."""
 
 
 # ─────────────────────────────────────────────
-# ORIGINAL REGEX LOGIC (unchanged)
+# REGEX LOGIC
 # ─────────────────────────────────────────────
+
+# Keywords that label apartment-level components (carpet, balcony, terrace attached to a flat)
+APARTMENT_COMPONENT_KEYWORDS = [
+    "कारपेट", "कार्पेट", "carpet",
+    "बाल्कनी", "balcony",
+    "टेरेस", "terrace",
+    "ड्राय बाल्कनी", "dry balcony",
+    "सदनिका",          # flat/unit
+    "युटिलिटी",        # utility area
+]
+
+def _is_survey_land_value(context_before: str) -> bool:
+    """
+    Returns True if the value is a survey-number land parcel area.
+    Patterns like: स.नं.20/9 क्षेत्र 3000  or  स.नं. 20/14 क्षेत्र 5000
+    """
+    # Match स.नं followed (within ~30 chars) by क्षेत्र right before the number
+    survey_pattern = re.search(
+        r'(?:स\.?\s*नं\.?|survey\s*no\.?|s\.no\.?)\s*[\d/]+\s*(?:क्षेत्र|area)?\s*$',
+        context_before.strip(),
+        re.IGNORECASE
+    )
+    return survey_pattern is not None
+
+
+def _is_yatun_pakhi_total(context_before: str, full_text: str, val: float) -> bool:
+    """
+    Returns True if this value follows 'यापैकी' or 'यांसी एकूण क्षेत्र' in a land-parcel
+    context (i.e. a sub-division total, not the flat area).
+    We detect this when the value is ≥ 1000 sq.mt AND 'यापैकी' appears nearby.
+    """
+    if val < 200:
+        return False
+    combined = context_before[-120:].lower()
+    if "यापैकी" in combined or "यापैकी" in full_text[:20].lower():
+        return True
+    return False
+
+
 def extract_area_logic(text):
     if pd.isna(text) or text == "": return 0.0
 
@@ -139,8 +178,37 @@ def extract_area_logic(text):
     parts = re.split(boundary_keywords, text, flags=re.IGNORECASE)
     relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
 
-    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन", "दर", "rate", "७/१२", "नाकाश"]
+    exclude_keywords = [
+        "पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव",
+        "प्लॉट", "plot", "वाढीव", "अविभक्त", "साईज", "size",
+        "बिल्डअप", "मुल्यांकन", "दर", "rate", "७/१२", "नाकाश",
+        # NOTE: "पैकी" removed from here — handled separately via _is_yatun_pakhi_total
+    ]
 
+    # ── PASS 1: collect apartment-component values (high confidence) ──────────
+    # These are values immediately followed by apartment-level keywords in context_after.
+    apartment_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', relevant_text, re.IGNORECASE):
+        val = float(match.group(1))
+        if not (2.0 <= val < 500):   # apartment components are never > 500 sq.mt
+            continue
+        start_idx = match.start()
+        end_idx   = match.end()
+        context_before = relevant_text[max(0, start_idx - 80):start_idx]
+        context_after  = relevant_text[end_idx:end_idx + 60]
+        combined_ctx   = (context_before + context_after).lower()
+
+        # Must have an apartment-component keyword nearby
+        if any(kw.lower() in combined_ctx for kw in APARTMENT_COMPONENT_KEYWORDS):
+            # Must NOT be a survey-land parcel
+            if not _is_survey_land_value(context_before):
+                if not apartment_vals or val != apartment_vals[-1]:
+                    apartment_vals.append(val)
+
+    if apartment_vals:
+        return round(sum(apartment_vals), 3)
+
+    # ── PASS 2: general metric scan (original logic, hardened) ────────────────
     m_vals = []
     total_area_found = None
 
@@ -148,15 +216,39 @@ def extract_area_logic(text):
         val = float(match.group(1))
         full_match_text = match.group(0).lower()
         start_idx = match.start()
-        context_before = relevant_text[max(0, start_idx-60):start_idx].lower()
-        bracket_context = relevant_text[max(0, start_idx-150):start_idx]
-        is_rera_duplicate = "(" in bracket_context and "रेरा" in bracket_context and ")" not in bracket_context
-        if not any(word in context_before for word in exclude_keywords):
-            if 2.0 <= val < 900 and not is_rera_duplicate:
-                if "एकूण क्षेत्र" in context_before or "एकूण क्षेत्र" in full_match_text:
+        context_before = relevant_text[max(0, start_idx - 80):start_idx]
+        context_before_low = context_before.lower()
+        bracket_context = relevant_text[max(0, start_idx - 150):start_idx]
+
+        is_rera_duplicate = (
+            "(" in bracket_context and "रेरा" in bracket_context
+            and ")" not in bracket_context
+        )
+
+        # Skip survey-number land parcels
+        if _is_survey_land_value(context_before_low):
+            continue
+
+        # Skip yatun/pakhi sub-totals that are land totals
+        if _is_yatun_pakhi_total(context_before_low, full_match_text, val):
+            continue
+
+        if any(word in context_before_low for word in exclude_keywords):
+            continue
+
+        if 2.0 <= val < 900 and not is_rera_duplicate:
+            # Only treat एकूण क्षेत्र as a total when it's NOT in a land/survey context
+            is_land_context = (
+                "स.नं" in bracket_context or
+                "survey" in bracket_context.lower() or
+                val > 500  # land totals are almost always > 500 sq.mt
+            )
+            if ("एकूण क्षेत्र" in context_before_low or "एकूण क्षेत्र" in full_match_text):
+                if not is_land_context:
                     total_area_found = val
-                if not m_vals or val != m_vals[-1]:
-                    m_vals.append(val)
+
+            if not m_vals or val != m_vals[-1]:
+                m_vals.append(val)
 
     if total_area_found:
         return round(total_area_found, 3)
@@ -169,11 +261,12 @@ def extract_area_logic(text):
                     return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
+    # ── PASS 3: imperial fallback ─────────────────────────────────────────────
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
         start_idx = match.start()
-        context_before = relevant_text[max(0, match.start()-60):start_idx].lower()
+        context_before = relevant_text[max(0, match.start() - 80):start_idx].lower()
         if not any(word in context_before for word in exclude_keywords):
             if 20.0 <= val < 9000:
                 if not f_vals or val != f_vals[-1]:
@@ -440,6 +533,12 @@ if uploaded_file:
             apply_excel_formatting(export_df, writer, 'Raw Data', is_summary=False)
             apply_excel_formatting(summary,   writer, 'Summary',  is_summary=True)
 
+        st.download_button(
+            label     = "⬇️ Download Excel Report",
+            data      = output.getvalue(),
+            file_name = "Spydarr_Market_Summary.xlsx",
+            mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
         # ── Email ─────────────────────────────────────
         st.divider()
