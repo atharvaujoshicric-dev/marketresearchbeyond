@@ -422,49 +422,50 @@ if uploaded_file:
             df['_regex_area_sqft'] = (df['_regex_area_sqmt'] * 10.764).round(3)
             df['_regex_config']    = df['_regex_area_sqft'].apply(lambda x: determine_config(x, t1, t2, t3))
 
-        # ── Groq cross-validation ──────────────────────
+        # ── Groq cross-validation (only on rows where regex found a non-zero area) ──
         if use_groq:
-            groq_areas   = []
-            groq_configs = []
-            groq_changed = []
-            groq_reasons = []
+            # Start with regex values; only override where Groq disagrees
+            groq_areas   = list(df['_regex_area_sqmt'])
+            groq_configs = list(df['_regex_config'])
 
-            progress_bar  = st.progress(0, text="Groq is cross-validating results…")
-            total_rows    = len(df)
+            rows_to_validate = [
+                (i, idx, row)
+                for i, (idx, row) in enumerate(df.iterrows())
+                if row['_regex_area_sqmt'] > 0
+            ]
+            total_to_validate = len(rows_to_validate)
+            corrections = 0
 
-            for idx, row in df.iterrows():
+            progress_bar = st.progress(0, text=f"Groq cross-validating {total_to_validate} rows…")
+
+            for done, (i, idx, row) in enumerate(rows_to_validate):
                 result = groq_validate(
                     description  = str(row[desc_col]),
                     regex_area   = row['_regex_area_sqmt'],
                     regex_config = row['_regex_config'],
                     t1=t1, t2=t2, t3=t3
                 )
-                groq_areas.append(result["area"])
-                groq_configs.append(result["config"])
-                groq_changed.append(result["changed"])
-                groq_reasons.append(result["reasoning"])
+                groq_areas[i]   = result["area"]
+                groq_configs[i] = result["config"]
+                if result["changed"]:
+                    corrections += 1
 
-                pct = int(((df.index.get_loc(idx) + 1) / total_rows) * 100)
-                progress_bar.progress(pct, text=f"Groq validating row {df.index.get_loc(idx)+1} / {total_rows}…")
+                pct = int(((done + 1) / total_to_validate) * 100)
+                progress_bar.progress(pct, text=f"Groq validating row {done+1} / {total_to_validate}…")
 
             progress_bar.empty()
 
             df['Carpet Area (SQ.MT)'] = groq_areas
             df['Configuration']        = groq_configs
-            df['_groq_changed']        = groq_changed
-            df['_groq_reasoning']      = groq_reasons
 
-            corrections = sum(groq_changed)
             if corrections:
-                st.warning(f"🤖 Groq corrected **{corrections}** out of {total_rows} rows. See 'Raw Data' tab for details.")
+                st.warning(f"🤖 Groq corrected **{corrections}** out of {total_to_validate} validated rows.")
             else:
-                st.success(f"✅ Groq validated all {total_rows} rows — regex results were accurate!")
+                st.success(f"✅ Groq validated all {total_to_validate} rows — regex results were accurate!")
 
         else:
             df['Carpet Area (SQ.MT)'] = df['_regex_area_sqmt']
             df['Configuration']        = df['_regex_config']
-            df['_groq_changed']        = False
-            df['_groq_reasoning']      = ""
 
         # ── Final calculated columns ───────────────────
         df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
@@ -474,8 +475,11 @@ if uploaded_file:
         )
         df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
 
-        # Drop internal helper columns before export
-        export_df = df.drop(columns=['_regex_area_sqmt', '_regex_area_sqft', '_regex_config'], errors='ignore')
+        # Drop ALL internal helper columns — Raw Data stays exactly as original + new calc cols only
+        export_df = df.drop(
+            columns=['_regex_area_sqmt', '_regex_area_sqft', '_regex_config'],
+            errors='ignore'
+        )
 
         # ── Summary ───────────────────────────────────
         valid_df = export_df[export_df['Carpet Area (SQ.FT)'] > 0].sort_values(
@@ -513,19 +517,7 @@ if uploaded_file:
         with tab1:
             st.dataframe(summary, use_container_width=True)
         with tab2:
-            highlight_col = '_groq_changed'
-            if use_groq and highlight_col in export_df.columns:
-                changed_mask = export_df[highlight_col]
-                st.caption(f"🟡 Highlighted rows = Groq corrected the regex result ({changed_mask.sum()} rows)")
-                st.dataframe(
-                    export_df.style.apply(
-                        lambda row: ['background-color: #FFF9C4' if row['_groq_changed'] else '' for _ in row],
-                        axis=1
-                    ),
-                    use_container_width=True
-                )
-            else:
-                st.dataframe(export_df, use_container_width=True)
+            st.dataframe(export_df, use_container_width=True)
 
         # ── Excel export ──────────────────────────────
         output = io.BytesIO()
