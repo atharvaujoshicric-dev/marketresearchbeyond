@@ -43,32 +43,36 @@ def check_password():
     return False
 
 # --- AI EXTRACTION LOGIC (GROQ) ---
-def extract_areas_with_ai(descriptions, batch_size=10):
-    """Processes descriptions using Groq Llama-3.3 for lightning speed."""
+import time # Add this at the very top of your file with other imports
+
+def extract_areas_with_ai(descriptions, batch_size=3): # Reduced batch_size to 3
+    """Processes descriptions using Groq with rate-limit handling."""
     all_extracted_values = []
     progress_bar = st.progress(0)
     
     for i in range(0, len(descriptions), batch_size):
         batch = descriptions[i:i + batch_size]
         
+        # Optimization: Truncate descriptions if they are excessively long 
+        # (Most area info is in the first 1000 chars)
+        cleaned_batch = [d[:1000] for d in batch]
+        
         prompt = f"""
-        Extract the TOTAL Carpet Area in Square METERS from these {len(batch)} property descriptions.
+        Extract the TOTAL Carpet Area in Square METERS from these {len(cleaned_batch)} property descriptions.
         Rules:
         1. Identify 'Carpet Area', 'Chatai Kshetra', or 'RERA Area'.
-        2. Sum 'Carpet' + 'Balcony' + 'Terrace' + 'Utility' if listed separately.
+        2. Sum 'Carpet' + 'Balcony' + 'Terrace' + 'Utility'.
         3. Convert Sq.Ft to Sq.Mt (Value / 10.764).
         4. Return ONLY a valid JSON list of floats.
-        5. If no area found, use 0.0.
         
-        Descriptions: {json.dumps(batch)}
+        Descriptions: {json.dumps(cleaned_batch)}
         """
         
         try:
-            # Using llama-3.3-70b-versatile for high intelligence/extraction accuracy
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "You are a real estate data specialist. Output ONLY a raw JSON list of numbers. No text, no explanation."},
+                    {"role": "system", "content": "You are a real estate data specialist. Output ONLY a raw JSON list of numbers."},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
@@ -76,18 +80,28 @@ def extract_areas_with_ai(descriptions, batch_size=10):
             )
             
             res_content = json.loads(completion.choices[0].message.content)
-            # Handle potential JSON structures (list vs dict)
             values = list(res_content.values())[0] if isinstance(res_content, dict) else res_content
             all_extracted_values.extend(values)
             
-        except Exception as e:
-            st.error(f"Groq API Error in batch {i}: {e}")
-            all_extracted_values.extend([0.0] * len(batch))
+            # --- RATE LIMIT GUARD ---
+            # Wait 2 seconds between batches to stay under the 12,000 TPM limit
+            time.sleep(2) 
             
-        progress_bar.progress(min((i + batch_size) / len(descriptions), 1.0))
+        except Exception as e:
+            if "413" in str(e) or "rate_limit" in str(e).lower():
+                st.warning(f"Rate limit hit at batch {i}. Pausing for 10 seconds...")
+                time.sleep(10) # Longer pause if we actually hit the wall
+                # Optional: You could retry the batch here
+            else:
+                st.error(f"Groq API Error in batch {i}: {e}")
+            
+            # Fill with 0.0 to keep dataframe alignment if batch fails
+            if len(all_extracted_values) < (i + len(batch)):
+                all_extracted_values.extend([0.0] * ( (i + len(batch)) - len(all_extracted_values) ))
+            
+        progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
         
     return all_extracted_values
-
 # --- EMAIL LOGIC ---
 def send_email(recipient_email, excel_data, filename):
     try:
