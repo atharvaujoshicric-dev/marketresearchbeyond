@@ -44,8 +44,8 @@ def check_password():
     return False
 
 # --- AI EXTRACTION LOGIC (GROQ) ---
-def extract_areas_with_ai(descriptions, batch_size=3): # Reduced to 3 to prevent cut-offs
-    """Processes descriptions with 8B model and higher output token limit."""
+def extract_areas_with_ai(descriptions, batch_size=3):
+    """Processes descriptions with 8B model using few-shot examples for strict JSON."""
     all_extracted_values = []
     progress_bar = st.progress(0)
     
@@ -56,48 +56,52 @@ def extract_areas_with_ai(descriptions, batch_size=3): # Reduced to 3 to prevent
         
         prompt = f"""
         Extract TOTAL Carpet Area in Sq.Mt for {len(batch)} properties.
-        Rules:
-        1. Solve math: (Carpet+Balcony+Terrace).
-        2. If Sq.Ft, convert: (Value/10.764).
-        3. Output ONLY the final float result.
-        JSON format: {{"areas": [float, float, float]}}
         
-        Data: {json.dumps(batch)}
+        CRITICAL RULES:
+        - If you see "48.50 + 8.69", you MUST output "57.19".
+        - If you see "Sq.Ft", you MUST divide by 10.764.
+        - NEVER include "+" or "/" in the JSON.
+        
+        EXAMPLE INPUT: ["Carpet 50.0 + Balcony 5.0", "750 Sq.Ft"]
+        EXAMPLE OUTPUT: {{"areas": [55.0, 69.67]}}
+        
+        REAL DATA TO PROCESS:
+        {json.dumps(batch)}
         """
         
         try:
             completion = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": "You are a data tool. Return ONLY valid JSON. Solve all math internally."},
+                    {"role": "system", "content": "You are a headless data parser. You perform all arithmetic internally. You return ONLY a JSON object with final float values. No math symbols allowed."},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
                 temperature=0,
-                max_tokens=500 # Added this to prevent the "max completion tokens" error
+                max_tokens=500
             )
             
             res_content = json.loads(completion.choices[0].message.content)
             values = res_content.get("areas", [])
             
-            # Final sanity check on values
             clean_values = []
             for v in values:
                 try:
-                    # If it's a string or weird format, float() will catch it
+                    # Force conversion to float. If AI sent "48+8", this will fail 
+                    # and we catch it in the except block.
                     clean_values.append(float(v))
                 except:
                     clean_values.append(0.0)
             
-            # If AI returned fewer values than batch size, pad with 0.0
+            # Pad if AI missed a row
             while len(clean_values) < len(batch):
                 clean_values.append(0.0)
                 
             all_extracted_values.extend(clean_values[:len(batch)])
-            time.sleep(1.0) # Small pause for Rate Limit
+            time.sleep(1.5) # Safe pause
             
         except Exception as e:
-            st.warning(f"Batch {i} encountered an issue: {e}")
+            st.warning(f"Batch {i} skipped due to formatting. Error: {e}")
             all_extracted_values.extend([0.0] * len(batch))
             
         progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
