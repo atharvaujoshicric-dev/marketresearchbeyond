@@ -45,21 +45,24 @@ def check_password():
 
 # --- AI EXTRACTION LOGIC (GROQ) ---
 def extract_areas_with_ai(descriptions, batch_size=3):
-    """Processes descriptions with strict instruction to solve math before returning JSON."""
+    """Processes descriptions with a strict 'No Math Symbols' rule for Groq JSON validation."""
     all_extracted_values = []
     progress_bar = st.progress(0)
     
     for i in range(0, len(descriptions), batch_size):
         batch = [str(d)[:1000] for d in descriptions[i:i + batch_size]]
         
+        # We add a very aggressive warning about math symbols to the prompt
         prompt = f"""
-        Extract the TOTAL Carpet Area in Square METERS from these {len(batch)} property descriptions.
+        Extract the TOTAL Carpet Area in Square METERS for these {len(batch)} properties.
         
-        STRICT RULES:
-        1. Sum 'Carpet' + 'Balcony' + 'Terrace' + 'Utility' yourself. 
-        2. If input is Sq.Ft, convert to Sq.Mt (Value / 10.764).
-        3. OUTPUT ONLY FINAL NUMBERS. Do not include math like '31.83 + 7.02'.
-        4. Return a JSON object with a key "areas" containing a list of floats.
+        CALCULATION RULES:
+        1. If you see multiple areas (Carpet + Balcony + Terrace), ADD THEM TOGETHER first.
+        2. If values are in Sq.Ft, DIVIDE by 10.764 to get Sq.Mt.
+        3. DO NOT output math symbols like '+' or '/'. Output only the resulting float.
+        
+        JSON STRUCTURE:
+        Return ONLY a JSON object: {{"areas": [float, float, float]}}
         
         Descriptions: {json.dumps(batch)}
         """
@@ -68,7 +71,10 @@ def extract_areas_with_ai(descriptions, batch_size=3):
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
-                    {"role": "system", "content": "You are a calculator. You perform all additions and conversions and return ONLY final float values in JSON."},
+                    {
+                        "role": "system", 
+                        "content": "You are a data processing engine. You solve all math problems internally and output ONLY final numerical results in a valid JSON list. NEVER include addition or division symbols in the JSON values."
+                    },
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
@@ -76,19 +82,24 @@ def extract_areas_with_ai(descriptions, batch_size=3):
             )
             
             res_content = json.loads(completion.choices[0].message.content)
-            # Ensure we get a flat list of numbers
+            # Standardizing result extraction
             values = res_content.get("areas", [])
-            if not values and isinstance(res_content, dict):
-                values = list(res_content.values())[0]
             
-            # Ensure they are floats (not strings or equations)
-            clean_values = [float(v) if isinstance(v, (int, float)) else 0.0 for v in values]
+            # Final safety check: if a value is somehow still a string, we force it to 0.0
+            clean_values = []
+            for v in values:
+                try:
+                    clean_values.append(float(v))
+                except:
+                    clean_values.append(0.0)
+            
             all_extracted_values.extend(clean_values)
             
-            time.sleep(1.5) # Prevent Rate Limit
+            # Small delay to keep the free-tier TPM (Tokens Per Minute) happy
+            time.sleep(2.0) 
             
         except Exception as e:
-            st.error(f"Batch {i} Error: {e}")
+            st.error(f"Batch {i} failed. Error: {e}")
             all_extracted_values.extend([0.0] * len(batch))
             
         progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
