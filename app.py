@@ -20,9 +20,9 @@ except Exception:
     GROQ_CLIENT = None
 
 # --- EMAIL CONFIGURATION ---
-SENDER_EMAIL = "atharvaujoshi@gmail.com"
+SENDER_EMAIL = st.secrets["SENDER_EMAIL"]
 SENDER_NAME = "Spydarr Market Research" 
-APP_PASSWORD = "nybl zsnx zvdw edqr"
+APP_PASSWORD = st.secrets["APP_PASSWORD"]
 
 def send_email(recipient_email, excel_data, filename):
     try:
