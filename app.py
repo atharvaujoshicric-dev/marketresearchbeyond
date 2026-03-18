@@ -44,37 +44,32 @@ def check_password():
     return False
 
 # --- AI EXTRACTION LOGIC (GROQ) ---
-def extract_areas_with_ai(descriptions, batch_size=3):
-    """Processes descriptions with a strict 'No Math Symbols' rule for Groq JSON validation."""
+def extract_areas_with_ai(descriptions, batch_size=5):
+    """Processes descriptions using the 8B model to maximize daily token quota."""
     all_extracted_values = []
     progress_bar = st.progress(0)
     
     for i in range(0, len(descriptions), batch_size):
-        batch = [str(d)[:1000] for d in descriptions[i:i + batch_size]]
+        # CLEANING: Take only first 500 chars and remove extra whitespace to save tokens
+        raw_batch = descriptions[i:i + batch_size]
+        batch = [" ".join(str(d)[:500].split()) for d in raw_batch]
         
-        # We add a very aggressive warning about math symbols to the prompt
         prompt = f"""
-        Extract the TOTAL Carpet Area in Square METERS for these {len(batch)} properties.
-        
-        CALCULATION RULES:
-        1. If you see multiple areas (Carpet + Balcony + Terrace), ADD THEM TOGETHER first.
-        2. If values are in Sq.Ft, DIVIDE by 10.764 to get Sq.Mt.
-        3. DO NOT output math symbols like '+' or '/'. Output only the resulting float.
-        
-        JSON STRUCTURE:
-        Return ONLY a JSON object: {{"areas": [float, float, float]}}
-        
-        Descriptions: {json.dumps(batch)}
+        Extract TOTAL Carpet Area in Sq.Mt for {len(batch)} properties.
+        Rules: 
+        1. Solve math: (Carpet+Balcony). 
+        2. If Sq.Ft, convert: (Val/10.764). 
+        3. NO math symbols in output.
+        JSON: {{"areas": [float]}}
+        Data: {json.dumps(batch)}
         """
         
         try:
             completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                # SWITCHED to 8b-instant: Higher daily limits, faster, and uses fewer tokens
+                model="llama-3.1-8b-instant", 
                 messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are a data processing engine. You solve all math problems internally and output ONLY final numerical results in a valid JSON list. NEVER include addition or division symbols in the JSON values."
-                    },
+                    {"role": "system", "content": "You are a silent calculator. Output ONLY a JSON list of final floats."},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
@@ -82,10 +77,8 @@ def extract_areas_with_ai(descriptions, batch_size=3):
             )
             
             res_content = json.loads(completion.choices[0].message.content)
-            # Standardizing result extraction
             values = res_content.get("areas", [])
             
-            # Final safety check: if a value is somehow still a string, we force it to 0.0
             clean_values = []
             for v in values:
                 try:
@@ -94,13 +87,18 @@ def extract_areas_with_ai(descriptions, batch_size=3):
                     clean_values.append(0.0)
             
             all_extracted_values.extend(clean_values)
-            
-            # Small delay to keep the free-tier TPM (Tokens Per Minute) happy
-            time.sleep(2.0) 
+            time.sleep(1.0) # Light cooldown
             
         except Exception as e:
-            st.error(f"Batch {i} failed. Error: {e}")
-            all_extracted_values.extend([0.0] * len(batch))
+            if "429" in str(e):
+                st.error("Daily Groq Limit Reached. Please wait 24 hours or switch API keys.")
+                # Fill remaining with 0 to prevent crash
+                remaining = len(descriptions) - len(all_extracted_values)
+                all_extracted_values.extend([0.0] * remaining)
+                break
+            else:
+                st.warning(f"Batch {i} error: {e}")
+                all_extracted_values.extend([0.0] * len(batch))
             
         progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
         
