@@ -44,61 +44,61 @@ def check_password():
     return False
 
 # --- AI EXTRACTION LOGIC (GROQ) ---
-def extract_areas_with_ai(descriptions, batch_size=5):
-    """Processes descriptions using the 8B model to maximize daily token quota."""
+def extract_areas_with_ai(descriptions, batch_size=3): # Reduced to 3 to prevent cut-offs
+    """Processes descriptions with 8B model and higher output token limit."""
     all_extracted_values = []
     progress_bar = st.progress(0)
     
     for i in range(0, len(descriptions), batch_size):
-        # CLEANING: Take only first 500 chars and remove extra whitespace to save tokens
         raw_batch = descriptions[i:i + batch_size]
-        batch = [" ".join(str(d)[:500].split()) for d in raw_batch]
+        # Clean text and limit to 400 chars to save input tokens
+        batch = [" ".join(str(d)[:400].split()) for d in raw_batch]
         
         prompt = f"""
         Extract TOTAL Carpet Area in Sq.Mt for {len(batch)} properties.
-        Rules: 
-        1. Solve math: (Carpet+Balcony). 
-        2. If Sq.Ft, convert: (Val/10.764). 
-        3. NO math symbols in output.
-        JSON: {{"areas": [float]}}
+        Rules:
+        1. Solve math: (Carpet+Balcony+Terrace).
+        2. If Sq.Ft, convert: (Value/10.764).
+        3. Output ONLY the final float result.
+        JSON format: {{"areas": [float, float, float]}}
+        
         Data: {json.dumps(batch)}
         """
         
         try:
             completion = client.chat.completions.create(
-                # SWITCHED to 8b-instant: Higher daily limits, faster, and uses fewer tokens
-                model="llama-3.1-8b-instant", 
+                model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": "You are a silent calculator. Output ONLY a JSON list of final floats."},
+                    {"role": "system", "content": "You are a data tool. Return ONLY valid JSON. Solve all math internally."},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
-                temperature=0
+                temperature=0,
+                max_tokens=500 # Added this to prevent the "max completion tokens" error
             )
             
             res_content = json.loads(completion.choices[0].message.content)
             values = res_content.get("areas", [])
             
+            # Final sanity check on values
             clean_values = []
             for v in values:
                 try:
+                    # If it's a string or weird format, float() will catch it
                     clean_values.append(float(v))
                 except:
                     clean_values.append(0.0)
             
-            all_extracted_values.extend(clean_values)
-            time.sleep(1.0) # Light cooldown
+            # If AI returned fewer values than batch size, pad with 0.0
+            while len(clean_values) < len(batch):
+                clean_values.append(0.0)
+                
+            all_extracted_values.extend(clean_values[:len(batch)])
+            time.sleep(1.0) # Small pause for Rate Limit
             
         except Exception as e:
-            if "429" in str(e):
-                st.error("Daily Groq Limit Reached. Please wait 24 hours or switch API keys.")
-                # Fill remaining with 0 to prevent crash
-                remaining = len(descriptions) - len(all_extracted_values)
-                all_extracted_values.extend([0.0] * remaining)
-                break
-            else:
-                st.warning(f"Batch {i} error: {e}")
-                all_extracted_values.extend([0.0] * len(batch))
+            st.warning(f"Batch {i} encountered an issue: {e}")
+            all_extracted_values.extend([0.0] * len(batch))
             
         progress_bar.progress(min((i + len(batch)) / len(descriptions), 1.0))
         
