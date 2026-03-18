@@ -6,5 +6,5 @@ yagmail
 
 streamlit
 pandas
-openai
+groq
 openpyxl
