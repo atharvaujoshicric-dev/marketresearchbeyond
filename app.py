@@ -9,154 +9,112 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from email import encoders
 from openpyxl.styles import Alignment, PatternFill, Border, Side
-from groq import Groq
 import os
 import json
 import time
+import requests
 
 # --- EMAIL CONFIGURATION ---
 SENDER_EMAIL = "atharvaujoshi@gmail.com"
 SENDER_NAME = "Spydarr Market Research"
 APP_PASSWORD = "nybl zsnx zvdw edqr"
 
-# llama3-8b-8192 = 500k tokens/day free tier (vs 100k for 70b)
-GROQ_MODEL = "llama3-8b-8192"
+# --- GEMINI CONFIG ---
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
-# --- GROQ CLIENT ---
-@st.cache_resource
-def get_groq_client():
-    api_key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", None)
-    if not api_key:
-        st.error("GROQ_API_KEY not found. Add it to your .env or Streamlit secrets.")
-        st.stop()
-    return Groq(api_key=api_key)
+SYSTEM_PROMPT = """You are an expert at reading Indian property registration documents written in Marathi and English.
 
+Your ONLY job: extract the FLAT/APARTMENT carpet area components and return their SUM in square meters.
 
-# ─────────────────────────────────────────────────────────────
-# STEP 1 — Pre-filter: extract only the flat-relevant portion
-# This runs locally (no API call) and cuts tokens by ~80%
-# ─────────────────────────────────────────────────────────────
-def prefilter_description(text: str) -> str:
-    """
-    From a full property description, extract only the sentence/clause
-    that describes the flat's areas (carpet + balcony + utility + terrace).
-    Removes land survey lines, RERA numbers, stamp duty notes, etc.
-    Returns a short cleaned string to send to Groq.
-    """
-    if pd.isna(text) or str(text).strip() == "":
-        return ""
-
-    text = str(text)
-
-    # Split on common clause separators
-    # We want clauses that contain area keywords for the flat
-    flat_keywords = [
-        "कारपेट", "कार्पेट", "carpet",
-        "बाल्कनी", "बालकनी", "balcony",
-        "युटिलिटी", "utility",
-        "टेरेस", "terrace",
-        "ड्राय", "dry",
-        "फ्लॅट नं", "सदनिका नं", "अपार्टमेंट नं",
-        "flat no", "apt no",
-    ]
-
-    # Split on sentence-like boundaries
-    parts = re.split(r'[,।\n]|\.\s+', text)
-
-    kept = []
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        # Skip pure land/survey lines
-        if re.search(r'स\.नं\.|सर्व्हे नं|हिस्सा नं|हे \d+|आर,|यापैकी क्षेत्र \d{4,}|एकूण क्षेत्र \d{4,}', part):
-            continue
-        # Skip RERA / stamp duty / legal boilerplate
-        if re.search(r'रेरा|RERA|मुद्रांक|शासन आदेश|Survey Number|महिला खरेदी|सवलत', part, re.IGNORECASE):
-            continue
-        # Keep if it has flat area keywords
-        if any(kw.lower() in part.lower() for kw in flat_keywords):
-            kept.append(part)
-        # Also keep the flat identifier line (floor, flat number)
-        elif re.search(r'मजल्यावरील|फ्लॅट नं|सदनिका नं|अपार्टमेंट नं', part):
-            kept.append(part)
-
-    result = ", ".join(kept) if kept else text[:600]
-    return result[:1200]  # hard cap — never send more than 1200 chars
-
-
-SYSTEM_PROMPT = """You are an expert at reading Indian property registration documents in Marathi and English.
-
-Extract ONLY the flat/apartment area components and return their SUM in sq.mt.
-
-INCLUDE:
-- Carpet area: कारपेट, कार्पेट, carpet area
-- Any balcony: बाल्कनी, बालकनी, ओपन बाल्कनी, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी
+INCLUDE (these belong to the flat):
+- Carpet area: कारपेट, कार्पेट, कारपेट क्षेत्र, कार्पेट क्षेत्र, carpet area, carpet
+- Any balcony attached to the flat: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनी एरिया, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी
 - Dry balcony: ड्राय बाल्कनी, ड्राय बालकनी
-- Utility: युटिलिटी, युटिलिटी बालकनी
-- Flat terrace: टेरेस (only if listed beside carpet/balcony, NOT open-to-sky)
+- Utility / utility balcony: युटिलिटी, युटिलिटी बालकनी
+- Terrace attached to flat: लगतचे टेरेस, टेरेस (ONLY if listed alongside carpet/balcony, NOT if described as open-to-sky or ओपन टेरेस)
 
-EXCLUDE:
-- Parking: पार्किंग, कार पार्किंग, पार्कींग, कव्हर्ड कार पार्किंग (has stall number)
+EXCLUDE (not part of flat area):
+- Land survey areas: anything after स.नं. or सर्व्हे नं. with हे/आर/hectare units, or large land extents
+- Land totals: एकूण क्षेत्र, यापैकी क्षेत्र when referring to land plots
 - Open terrace / sky: ओपन टेरेस, ओपन टू स्काय
-- Land areas: anything with हे/आर units, or survey number land extents
+- Parking: पार्किंग, कार पार्किंग, पार्कींग, कव्हर्ड कार पार्किंग (always has a stall number or नं.)
+- Road, reserved areas
 
-UNITS:
-- चौ.मी. / sq.mt → use directly
-- चौ.फूट / चौ.फुट / चौ.फु / sq.ft → divide by 10.764
-- If both units given for same item, use चौ.मी. value only
+UNIT CONVERSION:
+- चौ.मी. / चौ. मी. / sq.mt / sq.m = use as-is (these are square meters)
+- चौ.फूट / चौ.फुट / चौ.फु / sq.ft / चौ.फू = divide by 10.764 to get sq.mt
+- When BOTH units given for same item (e.g. "103.26 चौ.मी. म्हणजेच 1111 चौ.फूट"), use the चौ.मी. value ONLY
 
-Return ONLY raw JSON, no markdown, no explanation:
-{"components":[{"label":"carpet","value_sqmt":64.61},{"label":"balcony","value_sqmt":5.99}],"total_sqmt":70.60}
+ANTI-DOUBLE-COUNT: If one value equals the sum of previously listed components, skip it.
+
+OUTPUT FORMAT: Return ONLY a raw JSON object. No markdown, no backticks, no explanation, nothing else.
+{"components":[{"label":"carpet","value_sqmt":64.61},{"label":"open balcony","value_sqmt":5.99}],"total_sqmt":70.60}
+
 If nothing found: {"components":[],"total_sqmt":0.0}"""
 
 
-def call_groq_once(client, text):
-    """Single Groq API call. Returns (raw, parsed, error)."""
+def get_gemini_key():
+    key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", None)
+    if not key:
+        st.error("GEMINI_API_KEY not found. Add it to your .env or Streamlit secrets.")
+        st.stop()
+    return key
+
+
+def call_gemini_once(api_key, text):
+    """Single Gemini API call. Returns (raw_str, parsed_dict_or_none, error_or_none)."""
+    url = GEMINI_URL.format(model=GEMINI_MODEL, key=api_key)
+    payload = {
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": str(text)[:4000]}]}],
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 512,
+            "responseMimeType": "application/json"   # forces Gemini to return valid JSON
+        }
+    }
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
-            ],
-            temperature=0,
-            max_tokens=256,
-        )
-        raw = response.choices[0].message.content.strip()
+        resp = requests.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # Clean any stray markdown fences
         clean = re.sub(r"```json|```", "", raw).strip()
         m = re.search(r'\{.*\}', clean, re.DOTALL)
         if m:
             clean = m.group(0)
         parsed = json.loads(clean)
         return raw, parsed, None
+    except requests.HTTPError as e:
+        body = ""
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        return "", None, f"HTTP {resp.status_code}: {body}"
     except json.JSONDecodeError as e:
-        return locals().get('raw', ''), None, f"JSON error: {e}"
+        return raw if 'raw' in dir() else "", None, f"JSON parse error: {e} | raw: {raw[:200]}"
     except Exception as e:
-        return "", None, f"API error: {e}"
+        return "", None, f"Error: {e}"
 
 
-def extract_area_groq(text, client, debug_log=None):
-    """Pre-filter description, then call Groq. Retry up to 3x on rate limit."""
+def extract_area_gemini(text, api_key, debug_log=None):
+    """Extract flat carpet area (sq.mt) using Gemini with retry."""
     if pd.isna(text) or str(text).strip() == "":
         return 0.0
 
-    filtered = prefilter_description(text)
-
+    result_total = 0.0
     log_entry = {
-        "original_length": len(str(text)),
-        "filtered_length": len(filtered),
-        "filtered_text": filtered,
+        "description": str(text)[:150] + "...",
         "raw_response": "",
         "components": [],
         "total_sqmt": 0.0,
         "status": "ok"
     }
 
-    result_total = 0.0
-
     for attempt in range(3):
-        raw, parsed, error = call_groq_once(client, filtered)
+        raw, parsed, error = call_gemini_once(api_key, text)
         log_entry["raw_response"] = raw
 
         if error is None and parsed is not None:
@@ -165,28 +123,21 @@ def extract_area_groq(text, client, debug_log=None):
             log_entry["total_sqmt"] = result_total
             log_entry["status"] = "ok"
             break
-        elif error and "429" in str(error):
-            # Rate limited — extract wait time and sleep
-            wait_match = re.search(r'try again in (\d+)m(\d+)', str(error))
-            if wait_match:
-                wait_secs = int(wait_match.group(1)) * 60 + int(wait_match.group(2)) + 5
-            else:
-                wait_secs = 30
-            log_entry["status"] = f"rate limited, waiting {wait_secs}s (attempt {attempt+1})"
-            if debug_log is not None:
-                debug_log.append(dict(log_entry))
-            time.sleep(min(wait_secs, 120))  # cap at 2 min
         else:
             log_entry["status"] = f"attempt {attempt+1} failed: {error}"
-            time.sleep(2)
-
-        if attempt == 2:
-            # Fallback: grab last plausible float from raw
-            nums = re.findall(r'\b\d{1,3}\.\d{1,3}\b', raw)
-            plausible = [float(n) for n in nums if 2.0 < float(n) < 500.0]
-            result_total = round(plausible[-1], 3) if plausible else 0.0
-            log_entry["total_sqmt"] = result_total
-            log_entry["status"] += f" | fallback={result_total}"
+            # Handle rate limit: wait if 429
+            if "429" in str(error) or "quota" in str(error).lower():
+                wait = 5 * (attempt + 1)
+                time.sleep(wait)
+            elif attempt < 2:
+                time.sleep(1)
+            else:
+                # Final fallback: grab last plausible float (2–500 range)
+                nums = re.findall(r'\b\d{1,3}\.\d{1,3}\b', raw)
+                plausible = [float(n) for n in nums if 2.0 < float(n) < 500.0]
+                result_total = round(plausible[-1], 3) if plausible else 0.0
+                log_entry["total_sqmt"] = result_total
+                log_entry["status"] = f"fallback after 3 failures: {error}"
 
     if debug_log is not None:
         debug_log.append(log_entry)
@@ -259,8 +210,8 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
         white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
         for i in range(2, len(df) + 3):
-            curr_loc = df.iloc[i-2, 0] if i-2 < len(df) else None
-            prev_loc = df.iloc[i-3, 0] if i-3 >= 0 else None
+            curr_loc  = df.iloc[i-2, 0] if i-2 < len(df) else None
+            prev_loc  = df.iloc[i-3, 0] if i-3 >= 0 else None
             curr_prop = df.iloc[i-2, 1] if i-2 < len(df) else None
             prev_prop = df.iloc[i-3, 1] if i-3 >= 0 else None
 
@@ -310,23 +261,20 @@ t2 = st.sidebar.number_input("2 BHK Threshold (sq.ft)", value=850)
 t3 = st.sidebar.number_input("3 BHK Threshold (sq.ft)", value=1100)
 
 st.sidebar.divider()
-st.sidebar.header("🔧 Groq API Test")
-st.sidebar.caption("Run this FIRST to confirm your API key and model work.")
-if st.sidebar.button("▶ Test Groq API"):
-    test_text = 'फ्लॅट नं. 402, कारपेट क्षेत्र 64.61 चौ. मी., ओपन बाल्कनी क्षेत्र 5.99 चौ.मी., कव्हर्ड कार पार्किंग नं.(जी एल - 60), क्षेत्र 12.50 चौ. मी.'
+st.sidebar.header("🔧 Gemini API Test")
+st.sidebar.caption("Click to confirm your API key works before uploading a file.")
+if st.sidebar.button("▶ Test Gemini API"):
+    test_text = "फ्लॅट नं. 402, कारपेट क्षेत्र 64.61 चौ. मी., ओपन बाल्कनी क्षेत्र 5.99 चौ.मी., कव्हर्ड कार पार्किंग नं.(जी एल - 60), क्षेत्र 12.50 चौ. मी."
     try:
-        test_client = get_groq_client()
-        raw, parsed, error = call_groq_once(test_client, test_text)
+        key = get_gemini_key()
+        raw, parsed, error = call_gemini_once(key, test_text)
         if error:
-            st.sidebar.error(f"❌ {error}")
+            st.sidebar.error(f"❌ Error:\n{error}")
         else:
-            total = parsed.get('total_sqmt')
-            ok = abs(total - 70.60) < 1.0
-            if ok:
-                st.sidebar.success(f"✅ API OK! Got {total} sq.mt (expected ~70.60)")
-            else:
-                st.sidebar.warning(f"⚠️ API responded but got {total} sq.mt (expected ~70.60) — check prompt")
-            st.sidebar.code(raw, language='json')
+            total = parsed.get("total_sqmt")
+            ok = "✅" if abs(total - 70.60) < 0.1 else "⚠️"
+            st.sidebar.success(f"{ok} API OK! Got {total} sq.mt (expected 70.60)")
+            st.sidebar.json(parsed)
     except Exception as e:
         st.sidebar.error(f"❌ {e}")
 
@@ -343,34 +291,23 @@ if uploaded_file:
     loc_col  = clean_cols.get('micromarket')
 
     if desc_col and cons_col and prop_col and date_col and loc_col:
-        client = get_groq_client()
+        api_key = get_gemini_key()
 
-        # Estimate token usage upfront
-        total_rows = len(df)
-        avg_filtered_len = 400  # chars after prefilter, ~100 tokens each
-        est_tokens = total_rows * (avg_filtered_len // 4 + 300)  # +300 for system prompt
-        st.info(
-            f"📊 **{total_rows} rows** detected. "
-            f"Estimated token usage: ~**{est_tokens:,}** tokens "
-            f"(model limit: 500k/day on free tier). "
-            f"{'⚠️ May hit daily limit — consider splitting file.' if est_tokens > 400000 else '✅ Should fit within free tier.'}"
-        )
-
-        with st.spinner('Extracting carpet areas via Groq LLM...'):
+        with st.spinner('Extracting carpet areas via Gemini AI — this may take a moment...'):
             areas = []
             debug_log = []
-            progress = st.progress(0, text="Starting...")
-            token_counter = st.empty()
+            progress = st.progress(0, text="Processing rows...")
+            total_rows = len(df)
 
             for idx, row in df.iterrows():
-                area = extract_area_groq(row[desc_col], client, debug_log=debug_log)
+                area = extract_area_gemini(row[desc_col], api_key, debug_log=debug_log)
                 areas.append(area)
-                pct = (idx + 1) / total_rows
-                zeros_so_far = sum(1 for a in areas if a == 0.0)
-                progress.progress(pct, text=f"Row {idx+1}/{total_rows} — last: {area} sq.mt | zeros so far: {zeros_so_far}")
+                progress.progress(
+                    (idx + 1) / total_rows,
+                    text=f"Row {idx + 1} / {total_rows} — extracted: {area} sq.mt"
+                )
 
             progress.empty()
-            token_counter.empty()
             df['Carpet Area (SQ.MT)'] = areas
 
         with st.spinner('Calculating APR and generating report...'):
@@ -388,7 +325,6 @@ if uploaded_file:
             valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values(
                 [loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']
             )
-
             project_counts = valid_df.groupby(prop_col).size().reset_index(name='Total Count')
             summary = valid_df.groupby(
                 [loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']
@@ -423,39 +359,23 @@ if uploaded_file:
                 apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
 
         zero_count = sum(1 for a in areas if a == 0.0)
-        st.success(f"✅ Done! {total_rows - zero_count}/{total_rows} rows extracted successfully.")
+        st.success(f"✅ Analysis Complete! ({total_rows - zero_count}/{total_rows} rows extracted successfully)")
         if zero_count > 0:
-            st.warning(f"⚠️ {zero_count} rows returned 0 — open Debug expander to investigate.")
+            st.warning(f"⚠️ {zero_count} rows returned 0 — expand Debug below to investigate.")
 
-        # Preview table
         with st.expander("🔍 Preview: Carpet Area Extraction (first 20 rows)"):
-            preview = df[[desc_col, 'Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)']].head(20).copy()
-            preview['Carpet Area (SQ.MT)'] = preview['Carpet Area (SQ.MT)'].apply(
-                lambda x: f"🔴 {x}" if x == 0.0 else f"🟢 {x}"
-            )
-            st.dataframe(preview, use_container_width=True)
+            preview_cols = [desc_col, 'Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)']
+            st.dataframe(df[preview_cols].head(20), use_container_width=True)
 
-        # Debug expander — zeros first
         with st.expander(f"🐛 Debug: LLM Responses ({zero_count} zeros)"):
             sorted_log = sorted(debug_log, key=lambda x: x['total_sqmt'])
             for entry in sorted_log:
                 icon = "🔴" if entry['total_sqmt'] == 0.0 else "🟢"
-                st.markdown(
-                    f"{icon} **{entry['total_sqmt']} sq.mt** | "
-                    f"Original: {entry['original_length']} chars → Filtered: {entry['filtered_length']} chars | "
-                    f"Status: `{entry['status']}`"
-                )
-                with st.container():
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.caption("📤 Sent to Groq:")
-                        st.code(entry['filtered_text'], language='text')
-                    with col2:
-                        st.caption("📥 Groq Response:")
-                        st.code(entry['raw_response'] or "(empty)", language='json')
+                st.markdown(f"{icon} **{entry['total_sqmt']} sq.mt** — `{entry['status']}`")
+                st.caption(entry['description'])
+                st.code(entry['raw_response'] or "(empty)", language='json')
                 st.divider()
 
-        # Email + Download
         recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
         if st.button("Send to Email") and recipient:
             full_email = f"{recipient.strip().lower()}@beyondwalls.com"
@@ -468,7 +388,6 @@ if uploaded_file:
             file_name="Spydarr_Market_Report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
     else:
         st.error(
             "Missing required columns. Ensure file has: "
