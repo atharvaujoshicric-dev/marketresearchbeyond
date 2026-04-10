@@ -13,6 +13,7 @@ from groq import Groq
 import os
 import json
 import time
+import math
 
 # --- EMAIL CONFIGURATION ---
 SENDER_EMAIL = "atharvaujoshi@gmail.com"
@@ -30,110 +31,103 @@ def get_groq_client():
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are an expert at reading Indian property registration documents written in Marathi and English.
+# How many descriptions to send in one Groq call.
+# Each description ~300-500 tokens. Batch of 20 = ~10K tokens per call.
+# Free tier = 100K TPD, so ~10 batches/day max. Adjust down if still hitting limits.
+BATCH_SIZE = 20
 
-Your ONLY job: extract the FLAT/APARTMENT carpet area components and return their SUM in square meters.
+SYSTEM_PROMPT = """You are an expert at reading Indian property registration documents in Marathi and English.
 
-INCLUDE (these belong to the flat):
-- Carpet area: कारपेट, कार्पेट, कारपेट क्षेत्र, कार्पेट क्षेत्र, carpet area, carpet
-- Any balcony attached to the flat: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनी एरिया, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी
+You will receive a JSON array of property descriptions, each with an "id" and "text".
+For EACH description, extract ONLY the flat/apartment carpet area components and return their sum in square meters.
+
+INCLUDE (parts of the flat):
+- Carpet area: कारपेट, कार्पेट, carpet area
+- Any balcony: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी, बाल्कनी एरिया, बालकनी एरिया
 - Dry balcony: ड्राय बाल्कनी, ड्राय बालकनी
-- Utility / utility balcony: युटिलिटी, युटिलिटी बालकनी
-- Terrace attached to flat: लगतचे टेरेस, टेरेस (ONLY if listed alongside carpet/balcony, NOT if described as open-to-sky or ओपन टेरेस)
+- Utility: युटिलिटी, युटिलिटी बालकनी
+- Attached terrace: लगतचे टेरेस, टेरेस (ONLY if listed with carpet/balcony, NOT open-to-sky)
 
-EXCLUDE (not part of flat area):
-- Land survey areas: anything after स.नं. or सर्व्हे नं. with हे/आर/hectare units or large चौ.मी. figures (>500)
-- Land totals: एकूण क्षेत्र, यापैकी क्षेत्र when referring to land
-- Open terrace / sky: ओपन टेरेस, ओपन टू स्काय
-- Parking: पार्किंग, कार पार्किंग, पार्कींग, कव्हर्ड कार पार्किंग (always has a stall number or नं.)
-- Road, reserved areas
+EXCLUDE (not flat area):
+- Survey land: anything after स.नं./सर्व्हे नं. with हे/आर/hectare or large areas >500 चौ.मी.
+- Land totals: एकूण क्षेत्र, यापैकी क्षेत्र for land
+- Open terrace/sky: ओपन टेरेस, ओपन टू स्काय
+- Parking: पार्किंग, कार पार्किंग, पार्कींग, कव्हर्ड कार पार्किंग (has stall number)
 
-UNIT CONVERSION:
-- चौ.मी. / चौ. मी. / sq.mt / sq.m = use as-is
-- चौ.फूट / चौ.फुट / चौ.फु / sq.ft / चौ.फू = divide by 10.764
-- When BOTH units given for same item (e.g. "103.26 चौ.मी. म्हणजेच 1111 चौ.फूट"), use the चौ.मी. value only — do NOT add both
+UNITS:
+- चौ.मी./sq.mt → use directly
+- चौ.फूट/चौ.फुट/चौ.फु/sq.ft → divide by 10.764
+- If both units given for same item, use चौ.मी. only — do NOT count twice
 
-ANTI-DOUBLE-COUNT: If one value equals the sum of previously listed components, skip it — it is a restatement.
+ANTI-DOUBLE-COUNT: If one value = sum of others already listed, skip it.
 
-OUTPUT FORMAT: Return ONLY a raw JSON object. No markdown, no backticks, no explanation.
-{
-  "components": [
-    {"label": "carpet", "value_sqmt": 64.61},
-    {"label": "open balcony", "value_sqmt": 5.99}
-  ],
-  "total_sqmt": 70.60
-}
-
-If nothing found: {"components": [], "total_sqmt": 0.0}"""
+Return ONLY a raw JSON array — no markdown, no explanation:
+[
+  {"id": 0, "components": [{"label": "carpet", "value_sqmt": 64.61}, {"label": "balcony", "value_sqmt": 5.99}], "total_sqmt": 70.60},
+  {"id": 1, "components": [], "total_sqmt": 0.0}
+]"""
 
 
-def call_groq_once(client, text):
-    """Single Groq API call. Returns (raw_string, parsed_dict_or_none, error_string_or_none)."""
-    try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": str(text)[:4000]}
-            ],
-            temperature=0,
-            max_tokens=512,
-        )
-        raw = response.choices[0].message.content.strip()
-        # Clean markdown fences
-        clean = re.sub(r"```json|```", "", raw).strip()
-        # Extract JSON block
-        m = re.search(r'\{.*\}', clean, re.DOTALL)
-        if m:
-            clean = m.group(0)
-        parsed = json.loads(clean)
-        return raw, parsed, None
-    except json.JSONDecodeError as e:
-        return raw if 'raw' in dir() else "", None, f"JSON parse error: {e}"
-    except Exception as e:
-        return "", None, f"API error: {e}"
-
-
-def extract_area_groq(text, client, debug_log=None):
-    """Extract flat carpet area (sq.mt) using Groq LLM with retry + fallback."""
-    if pd.isna(text) or str(text).strip() == "":
-        return 0.0
-
-    result_total = 0.0
-    log_entry = {
-        "description": str(text)[:150] + "...",
-        "raw_response": "",
-        "components": [],
-        "total_sqmt": 0.0,
-        "status": "ok"
-    }
+def extract_areas_batch(descriptions: list, client: Groq) -> dict:
+    """
+    Send a batch of descriptions to Groq in one call.
+    descriptions: list of (index, text) tuples
+    Returns: dict of {index: total_sqmt}
+    """
+    payload = [{"id": idx, "text": str(text)[:1500]} for idx, text in descriptions]
+    user_msg = json.dumps(payload, ensure_ascii=False)
 
     for attempt in range(3):
-        raw, parsed, error = call_groq_once(client, text)
-        log_entry["raw_response"] = raw
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg}
+                ],
+                temperature=0,
+                max_tokens=1024,
+            )
+            raw = response.choices[0].message.content.strip()
+            clean = re.sub(r"```json|```", "", raw).strip()
 
-        if error is None and parsed is not None:
-            result_total = round(float(parsed.get("total_sqmt", 0.0)), 3)
-            log_entry["components"] = parsed.get("components", [])
-            log_entry["total_sqmt"] = result_total
-            log_entry["status"] = "ok"
-            break
-        else:
-            log_entry["status"] = f"attempt {attempt+1} failed: {error}"
+            # Extract JSON array from response
+            arr_match = re.search(r'\[.*\]', clean, re.DOTALL)
+            if arr_match:
+                clean = arr_match.group(0)
+
+            parsed = json.loads(clean)
+            return {item["id"]: round(float(item.get("total_sqmt", 0.0)), 3) for item in parsed}
+
+        except json.JSONDecodeError:
             if attempt < 2:
-                time.sleep(1.5)  # brief pause before retry (rate limit buffer)
+                time.sleep(2)
             else:
-                # Final fallback: grab last plausible float from raw
-                nums = re.findall(r'\b\d{1,3}\.\d{1,3}\b', raw)
-                plausible = [float(n) for n in nums if 2.0 < float(n) < 500.0]
-                result_total = round(plausible[-1], 3) if plausible else 0.0
-                log_entry["total_sqmt"] = result_total
-                log_entry["status"] = f"fallback after 3 failures: {error}"
+                # Return 0 for all in this batch on total failure
+                return {idx: 0.0 for idx, _ in descriptions}
 
-    if debug_log is not None:
-        debug_log.append(log_entry)
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str.lower():
+                # Parse wait time from error if possible
+                wait = 60
+                m = re.search(r'try again in (\d+)m(\d+)', err_str)
+                if m:
+                    wait = int(m.group(1)) * 60 + int(m.group(2)) + 5
+                else:
+                    m2 = re.search(r'try again in (\d+\.?\d*)s', err_str)
+                    if m2:
+                        wait = math.ceil(float(m2.group(1))) + 2
 
-    return result_total
+                st.warning(f"⏳ Rate limit hit. Waiting {wait}s before retrying...")
+                time.sleep(wait)
+            else:
+                if attempt < 2:
+                    time.sleep(2)
+                else:
+                    return {idx: 0.0 for idx, _ in descriptions}
+
+    return {idx: 0.0 for idx, _ in descriptions}
 
 
 def send_email(recipient_email, excel_data, filename):
@@ -253,19 +247,25 @@ t3 = st.sidebar.number_input("3 BHK Threshold (sq.ft)", value=1100)
 
 st.sidebar.divider()
 st.sidebar.header("🔧 Groq API Test")
-st.sidebar.caption("Run this FIRST to confirm your API key works before uploading a full file.")
-if st.sidebar.button("▶ Test Groq API"):
-    test_text = '1) फ्लॅट नं. 402, कारपेट क्षेत्र 64.61 चौ. मी., ओपन बाल्कनी क्षेत्र 5.99 चौ.मी., कव्हर्ड कार पार्किंग नं.(जी एल - 60), क्षेत्र 12.50 चौ. मी.'
+st.sidebar.caption("Run this first to confirm your API key and batching works.")
+if st.sidebar.button("▶ Test Groq API (2 descriptions)"):
+    test_batch = [
+        (0, 'फ्लॅट नं. 402, कारपेट क्षेत्र 64.61 चौ. मी., ओपन बाल्कनी क्षेत्र 5.99 चौ.मी., कव्हर्ड कार पार्किंग नं.(जी एल - 60), क्षेत्र 12.50 चौ. मी.'),
+        (1, 'फ्लॅट नं. 602, कारपेट एरिया 58.10 चौ मी, बालकनी एरिया 7.73 चौ मी, युटिलिटी बालकनी 2.53 चौ मी, कव्हर्ड कार पार्किंग सह'),
+    ]
     try:
         test_client = get_groq_client()
-        raw, parsed, error = call_groq_once(test_client, test_text)
-        if error:
-            st.sidebar.error(f"❌ API Error:\n{error}")
-        else:
-            st.sidebar.success(f"✅ API OK! Total: {parsed.get('total_sqmt')} sq.mt (expected ~70.60)")
-            st.sidebar.code(raw, language='json')
+        results = extract_areas_batch(test_batch, test_client)
+        st.sidebar.success(f"✅ API OK!\nRow 0: {results.get(0)} sq.mt (expected 70.60)\nRow 1: {results.get(1)} sq.mt (expected 68.36)")
     except Exception as e:
-        st.sidebar.error(f"❌ Client error: {e}")
+        st.sidebar.error(f"❌ Error: {e}")
+
+st.sidebar.divider()
+batch_size = st.sidebar.number_input(
+    "Batch Size (rows per Groq call)",
+    min_value=5, max_value=50, value=BATCH_SIZE, step=5,
+    help="Higher = fewer API calls but more tokens per call. Lower = safer if hitting limits."
+)
 
 # ── File Upload ───────────────────────────
 uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
@@ -273,29 +273,43 @@ uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     clean_cols = {c.lower().strip(): c for c in df.columns}
-    desc_col  = clean_cols.get('property description')
-    cons_col  = clean_cols.get('consideration value')
-    prop_col  = clean_cols.get('property')
-    date_col  = clean_cols.get('completion date')
-    loc_col   = clean_cols.get('micromarket')
+    desc_col = clean_cols.get('property description')
+    cons_col = clean_cols.get('consideration value')
+    prop_col = clean_cols.get('property')
+    date_col = clean_cols.get('completion date')
+    loc_col  = clean_cols.get('micromarket')
 
     if desc_col and cons_col and prop_col and date_col and loc_col:
         client = get_groq_client()
+        total_rows = len(df)
+        descriptions = list(df[desc_col].items())  # list of (index, text)
 
-        with st.spinner('Extracting carpet areas via Groq LLM — this may take a moment...'):
-            areas = []
-            debug_log = []
-            progress = st.progress(0, text="Processing rows...")
-            total_rows = len(df)
+        # Split into batches
+        batches = [descriptions[i:i + batch_size] for i in range(0, total_rows, batch_size)]
+        total_batches = len(batches)
 
-            for idx, row in df.iterrows():
-                area = extract_area_groq(row[desc_col], client, debug_log=debug_log)
-                areas.append(area)
-                progress.progress((idx + 1) / total_rows,
-                                  text=f"Row {idx + 1} of {total_rows} — last area: {area} sq.mt")
+        st.info(f"📦 {total_rows} rows → {total_batches} batches of ~{batch_size} (1 Groq call per batch)")
 
+        with st.spinner(f'Sending {total_batches} batch(es) to Groq...'):
+            all_results = {}
+            progress = st.progress(0, text="Starting...")
+
+            for b_idx, batch in enumerate(batches):
+                progress.progress(
+                    (b_idx) / total_batches,
+                    text=f"Batch {b_idx + 1} of {total_batches} ({len(batch)} rows)..."
+                )
+                batch_results = extract_areas_batch(batch, client)
+                all_results.update(batch_results)
+                if b_idx < total_batches - 1:
+                    time.sleep(0.5)  # small pause between batches
+
+            progress.progress(1.0, text="Done!")
+            time.sleep(0.3)
             progress.empty()
-            df['Carpet Area (SQ.MT)'] = areas
+
+        # Map results back to df
+        df['Carpet Area (SQ.MT)'] = df.index.map(lambda i: all_results.get(i, 0.0))
 
         with st.spinner('Calculating APR and generating report...'):
             df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
@@ -346,28 +360,23 @@ if uploaded_file:
                 apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
                 apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
 
-        zero_count = sum(1 for a in areas if a == 0.0)
-        st.success(f"✅ Analysis Complete! ({total_rows - zero_count}/{total_rows} rows extracted successfully)")
+        zero_count = sum(1 for v in all_results.values() if v == 0.0)
+        st.success(f"✅ Analysis Complete! {total_rows - zero_count}/{total_rows} rows extracted successfully.")
 
         if zero_count > 0:
-            st.warning(f"⚠️ {zero_count} rows returned 0 — check the Debug expander below.")
+            st.warning(f"⚠️ {zero_count} rows returned 0 — expand preview below to inspect.")
 
-        # Preview
         with st.expander("🔍 Preview: Carpet Area Extraction (first 20 rows)"):
             preview_cols = [desc_col, 'Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)']
             st.dataframe(df[preview_cols].head(20), use_container_width=True)
 
-        # Debug — shows ALL rows, sorted so zeros appear first
-        with st.expander(f"🐛 Debug: LLM Responses ({zero_count} zeros found)"):
-            sorted_log = sorted(debug_log, key=lambda x: x['total_sqmt'])
-            for entry in sorted_log:
-                color = "🔴" if entry['total_sqmt'] == 0.0 else "🟢"
-                st.markdown(f"{color} **{entry['total_sqmt']} sq.mt** — Status: `{entry['status']}`")
-                st.caption(entry['description'])
-                st.code(entry['raw_response'] or "(empty)", language='json')
-                st.divider()
+        with st.expander(f"🔍 Rows with 0 area ({zero_count} rows)"):
+            zero_df = df[df['Carpet Area (SQ.MT)'] == 0.0][[desc_col, 'Carpet Area (SQ.MT)']]
+            if len(zero_df) > 0:
+                st.dataframe(zero_df, use_container_width=True)
+            else:
+                st.success("No zero rows!")
 
-        # Email + Download
         recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
         if st.button("Send to Email") and recipient:
             full_email = f"{recipient.strip().lower()}@beyondwalls.com"
