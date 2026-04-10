@@ -35,68 +35,106 @@ SYSTEM_PROMPT = """You are an expert at reading Indian property registration doc
 Your ONLY job is to extract the FLAT/APARTMENT carpet area components and return their SUM in square meters (चौरस मी / sq.mt).
 
 INCLUDE these area components (they belong to the flat itself):
-- Carpet area (कारपेट / कारपेट क्षेत्र)
-- Balcony (बाल्कनी)
-- Dry balcony (ड्राय बाल्कनी)
-- Utility area (युटिलिटी)
-- Attached terrace mentioned immediately alongside the flat (लगतचे टेरेस / ड्राय बाल्कनी)
+- Carpet area: कारपेट, कार्पेट, कारपेट क्षेत्र, कार्पेट क्षेत्र, carpet area
+- Balcony (any type attached to the flat): बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनी एरिया, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, enclosed balcony, open balcony, attached balcony
+- Dry balcony: ड्राय बाल्कनी, ड्राय बालकनी
+- Utility / utility balcony: युटिलिटी, युटिलिटी बालकनी, utility, utility balcony
+- Attached terrace to the flat: लगतचे टेरेस, टेरेस (only when mentioned alongside flat components, NOT open-to-sky)
 
 EXCLUDE these — they are NOT part of the flat's carpet area:
-- Survey number land areas (स.नं. / स. नं. followed by land extents)
-- Total land / plot area (एकूण क्षेत्र, प्लॉट क्षेत्र)
-- Open terrace / open to sky (ओपन टेरेस, ओपन टू स्काय)
-- Parking / car parking (पार्किंग, कार पार्किंग, पार्कींग)
+- Survey number land areas: स.नं., स. नं., सर्व्हे नं followed by hectare/are/चौ.मी. land extents
+- Total land / plot area: एकूण क्षेत्र, प्लॉट क्षेत्र, यापैकी क्षेत्र (land subdivision)
+- Open terrace / open to sky: ओपन टेरेस, ओपन टू स्काय
+- Parking / car parking: पार्किंग, कार पार्किंग, पार्कींग, covered parking, कव्हर्ड कार पार्किंग — these always have a parking number or stall reference
 - Road / reserved areas
-- Any area described with "यापैकी" (meaning "out of which") that refers to land subdivision
 
-RULES:
-1. All values in sq.ft must be converted to sq.mt by dividing by 10.764.
-2. If a value appears to be the stated total of the components you already found, do NOT add it again (avoid double counting).
-3. Return ONLY a valid JSON object. No explanation, no markdown, no extra text.
+CONVERSION RULE:
+- Values given in चौ.फूट / चौ.फुट / sq.ft must be converted to sq.mt by dividing by 10.764
+- Values already in चौ.मी. / चौ. मी. / sq.mt must be used directly
+- Sometimes both units are given for the same component (e.g. "103.26 चौ.मी. व लगतेच बाल्कनी 12.59 चौ. मी.") — use the sq.mt value, do NOT double count
+
+DOUBLE COUNTING RULE:
+- If a value appears to equal the sum of other components already found, it is a stated total — do NOT add it again
+
+IMPORTANT: Return ONLY a valid JSON object. No explanation, no markdown backticks, no extra text whatsoever.
 
 JSON format:
 {
   "components": [
-    {"label": "carpet", "value_sqmt": 80.64},
-    {"label": "dry balcony / terrace", "value_sqmt": 15.32}
+    {"label": "carpet", "value_sqmt": 64.61},
+    {"label": "open balcony", "value_sqmt": 5.99}
   ],
-  "total_sqmt": 95.96
+  "total_sqmt": 70.60
 }
 
-If no valid flat area is found, return:
+If no valid flat area is found, return exactly:
 {"components": [], "total_sqmt": 0.0}
 """
 
-def extract_area_groq(text: str, client: Groq) -> float:
+def extract_area_groq(text: str, client: Groq, debug_log: list = None) -> float:
     """Use Groq LLM to extract and sum flat carpet area components from property description."""
     if pd.isna(text) or str(text).strip() == "":
         return 0.0
 
-    try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": str(text)[:4000]}  # cap to avoid token overflow
-            ],
-            temperature=0,
-            max_tokens=512,
-        )
-        raw = response.choices[0].message.content.strip()
+    raw = ""
+    for attempt in range(2):  # retry once on failure
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": str(text)[:4000]}
+                ],
+                temperature=0,
+                max_tokens=512,
+            )
+            raw = response.choices[0].message.content.strip()
 
-        # Strip markdown fences if model adds them
-        raw = re.sub(r"```json|```", "", raw).strip()
+            # Strip markdown fences if model adds them
+            raw_clean = re.sub(r"```json|```", "", raw).strip()
 
-        parsed = json.loads(raw)
-        total = float(parsed.get("total_sqmt", 0.0))
-        return round(total, 3)
+            # Extract only the JSON object (in case model adds preamble text)
+            json_match = re.search(r'\{.*\}', raw_clean, re.DOTALL)
+            if json_match:
+                raw_clean = json_match.group(0)
 
-    except json.JSONDecodeError:
-        # Try to salvage a number from the raw output
-        nums = re.findall(r'\d+\.?\d*', raw)
-        return round(float(nums[-1]), 3) if nums else 0.0
-    except Exception:
-        return 0.0
+            parsed = json.loads(raw_clean)
+            total = float(parsed.get("total_sqmt", 0.0))
+
+            if debug_log is not None:
+                debug_log.append({
+                    "description": str(text)[:120] + "...",
+                    "raw_response": raw,
+                    "components": parsed.get("components", []),
+                    "total_sqmt": total
+                })
+
+            return round(total, 3)
+
+        except json.JSONDecodeError:
+            if attempt == 1:
+                # Last resort: grab the last float from the raw output
+                nums = re.findall(r'\d+\.?\d+', raw)
+                fallback = round(float(nums[-1]), 3) if nums else 0.0
+                if debug_log is not None:
+                    debug_log.append({
+                        "description": str(text)[:120] + "...",
+                        "raw_response": raw,
+                        "components": "JSON PARSE FAILED",
+                        "total_sqmt": fallback
+                    })
+                return fallback
+        except Exception as e:
+            if attempt == 1:
+                if debug_log is not None:
+                    debug_log.append({
+                        "description": str(text)[:120] + "...",
+                        "raw_response": str(e),
+                        "components": "ERROR",
+                        "total_sqmt": 0.0
+                    })
+                return 0.0
+    return 0.0
 
 
 def send_email(recipient_email, excel_data, filename):
@@ -236,13 +274,13 @@ if uploaded_file:
         client = get_groq_client()
 
         with st.spinner('Extracting carpet areas via Groq LLM — this may take a moment...'):
-            # Process row by row with a live progress bar
             areas = []
+            debug_log = []
             progress = st.progress(0, text="Processing rows...")
             total_rows = len(df)
 
             for idx, row in df.iterrows():
-                area = extract_area_groq(row[desc_col], client)
+                area = extract_area_groq(row[desc_col], client, debug_log=debug_log)
                 areas.append(area)
                 progress.progress((idx + 1) / total_rows, text=f"Row {idx + 1} of {total_rows}")
 
@@ -298,10 +336,22 @@ if uploaded_file:
 
         st.success("✅ Analysis Complete!")
 
-        # Show a quick preview of extracted areas for sanity check
+        # Preview extracted areas
         with st.expander("🔍 Preview: Carpet Area Extraction (first 10 rows)"):
             preview_cols = [desc_col, 'Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)']
             st.dataframe(df[preview_cols].head(10), use_container_width=True)
+
+        # Debug view — shows LLM raw response for each row, useful for spotting wrong extractions
+        with st.expander("🐛 Debug: LLM Responses (check rows with 0 area)"):
+            zero_rows = [d for d in debug_log if d['total_sqmt'] == 0.0]
+            st.markdown(f"**Total rows processed:** {len(debug_log)} | **Rows with 0 area:** {len(zero_rows)}")
+            for entry in debug_log:
+                color = "🔴" if entry['total_sqmt'] == 0.0 else "🟢"
+                with st.container():
+                    st.markdown(f"{color} **Total:** {entry['total_sqmt']} sq.mt")
+                    st.caption(entry['description'])
+                    st.code(entry['raw_response'], language='json')
+                    st.divider()
 
         recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
         if st.button("Send to Email") and recipient:
