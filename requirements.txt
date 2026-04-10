@@ -8,3 +8,8 @@ streamlit
 pandas
 groq
 openpyxl
+
+streamlit
+pandas
+openpyxl
+groq
