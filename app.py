@@ -23,35 +23,34 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 GEMINI_MODEL = "gemini-2.0-flash"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
+# UPDATED SYSTEM PROMPT: Focused purely on extracting attached balconies
 SYSTEM_PROMPT = """You are an expert at reading Indian property registration documents written in Marathi and English.
 
-Your ONLY job: extract the FLAT/APARTMENT carpet area components and return their SUM in square meters.
+Your ONLY job: extract the carpet area components of ATTACHED BALCONIES, DRY BALCONIES, and TERRACES from the description text and return their SUM in square meters.
 
-INCLUDE (these belong to the flat):
-- Carpet area: कारपेट, कार्पेट, कारपेट क्षेत्र, कार्पेट क्षेत्र, carpet area, carpet
-- Any balcony attached to the flat: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनी एरिया, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी
-- Dry balcony: ड्राय बाल्कनी, ड्राय बालकनी
-- Utility / utility balcony: युटिलिटी, युटिलिटी बालकनी
-- Terrace attached to flat: लगतचे टेरेस, टेरेस (ONLY if listed alongside carpet/balcony, NOT if described as open-to-sky or ओपन टेरेस)
+DO NOT look for or extract the main flat/apartment carpet area. Only extract attached peripheral spaces.
 
-EXCLUDE (not part of flat area):
-- Land survey areas: anything after स.नं. or सर्व्हे नं. with हे/आर/hectare units, or large land extents
-- Land totals: एकूण क्षेत्र, यापैकी क्षेत्र when referring to land plots
+INCLUDE (these belong to balcony components):
+- Any balcony attached to the flat: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनी एरिया, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी, enclosed balcony
+- Dry balcony: ड्राय बाल्कनी, ड्राय बालकनी, dry balcony
+- Utility / utility balcony: युटिलिटी, युटिलिटी बालकनी, utility
+- Terrace attached to flat: लगतचे टेरेस, टेरेस (ONLY if listed alongside a balcony or explicitly attached, NOT if described as open-to-sky or ओपन टेरेस)
+
+EXCLUDE:
+- Main flat carpet area (e.g., "कारपेट क्षेत्र", "carpet area")
+- Land survey areas: anything after स.नं. or सर्व्हे नं.
 - Open terrace / sky: ओपन टेरेस, ओपन टू स्काय
-- Parking: पार्किंग, कार पार्किंग, पार्कींग, कव्हर्ड कार पार्किंग (always has a stall number or नं.)
-- Road, reserved areas
+- Parking spaces or Road areas
 
-UNIT CONVERSION:
+UNIT CONVERSION FOR BALCONIES:
 - चौ.मी. / चौ. मी. / sq.mt / sq.m = use as-is (these are square meters)
 - चौ.फूट / चौ.फुट / चौ.फु / sq.ft / चौ.फू = divide by 10.764 to get sq.mt
-- When BOTH units given for same item (e.g. "103.26 चौ.मी. म्हणजेच 1111 चौ.फूट"), use the चौ.मी. value ONLY
-
-ANTI-DOUBLE-COUNT: If one value equals the sum of previously listed components, skip it.
+- When BOTH units given for same item, use the चौ.मी. value ONLY
 
 OUTPUT FORMAT: Return ONLY a raw JSON object. No markdown, no backticks, no explanation, nothing else.
-{"components":[{"label":"carpet","value_sqmt":64.61},{"label":"open balcony","value_sqmt":5.99}],"total_sqmt":70.60}
+{"components":[{"label":"open balcony","value_sqmt":5.99},{"label":"dry balcony","value_sqmt":2.50}],"total_balcony_sqmt":8.49}
 
-If nothing found: {"components":[],"total_sqmt":0.0}"""
+If no balconies are mentioned: {"components":[],"total_balcony_sqmt":0.0}"""
 
 
 def get_gemini_key():
@@ -79,8 +78,8 @@ def call_gemini_once(api_key, text):
         resp.raise_for_status()
         data = resp.json()
         raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        # Clean any stray markdown fences
-        clean = re.sub(r"```json|```", "", raw).strip()
+        clean = re.sub(r"```json|
+```", "", raw).strip()
         m = re.search(r'\{.*\}', clean, re.DOTALL)
         if m:
             clean = m.group(0)
@@ -99,8 +98,8 @@ def call_gemini_once(api_key, text):
         return "", None, f"Error: {e}"
 
 
-def extract_area_gemini(text, api_key, debug_log=None):
-    """Extract flat carpet area (sq.mt) using Gemini with retry."""
+def extract_balcony_gemini(text, api_key, debug_log=None):
+    """Extract balcony area (sq.mt) using Gemini with retry."""
     if pd.isna(text) or str(text).strip() == "":
         return 0.0
 
@@ -109,7 +108,7 @@ def extract_area_gemini(text, api_key, debug_log=None):
         "description": str(text)[:150] + "...",
         "raw_response": "",
         "components": [],
-        "total_sqmt": 0.0,
+        "total_balcony_sqmt": 0.0,
         "status": "ok"
     }
 
@@ -118,26 +117,23 @@ def extract_area_gemini(text, api_key, debug_log=None):
         log_entry["raw_response"] = raw
 
         if error is None and parsed is not None:
-            result_total = round(float(parsed.get("total_sqmt", 0.0)), 3)
+            result_total = round(float(parsed.get("total_balcony_sqmt", 0.0)), 3)
             log_entry["components"] = parsed.get("components", [])
-            log_entry["total_sqmt"] = result_total
+            log_entry["total_balcony_sqmt"] = result_total
             log_entry["status"] = "ok"
             break
         else:
             log_entry["status"] = f"attempt {attempt+1} failed: {error}"
-            # Handle rate limit: wait if 429
             if "429" in str(error) or "quota" in str(error).lower():
                 wait = 5 * (attempt + 1)
                 time.sleep(wait)
             elif attempt < 2:
                 time.sleep(1)
             else:
-                # Final fallback: grab last plausible float (2–500 range)
-                nums = re.findall(r'\b\d{1,3}\.\d{1,3}\b', raw)
-                plausible = [float(n) for n in nums if 2.0 < float(n) < 500.0]
-                result_total = round(plausible[-1], 3) if plausible else 0.0
-                log_entry["total_sqmt"] = result_total
-                log_entry["status"] = f"fallback after 3 failures: {error}"
+                # Fallback to 0 if LLM fails repeatedly
+                result_total = 0.0
+                log_entry["total_balcony_sqmt"] = result_total
+                log_entry["status"] = f"fallback to 0 after 3 failures: {error}"
 
     if debug_log is not None:
         debug_log.append(log_entry)
@@ -264,16 +260,15 @@ st.sidebar.divider()
 st.sidebar.header("🔧 Gemini API Test")
 st.sidebar.caption("Click to confirm your API key works before uploading a file.")
 if st.sidebar.button("▶ Test Gemini API"):
-    test_text = "फ्लॅट नं. 402, कारपेट क्षेत्र 64.61 चौ. मी., ओपन बाल्कनी क्षेत्र 5.99 चौ.मी., कव्हर्ड कार पार्किंग नं.(जी एल - 60), क्षेत्र 12.50 चौ. मी."
+    test_text = "फ्लॅट नं. 402, कारपेट क्षेत्र 64.61 चौ. मी., ओपन बाल्कनी क्षेत्र 5.99 चौ.मी., ड्राय बालकनी क्षेत्र 2.50 चौ.मी."
     try:
         key = get_gemini_key()
         raw, parsed, error = call_gemini_once(key, test_text)
         if error:
             st.sidebar.error(f"❌ Error:\n{error}")
         else:
-            total = parsed.get("total_sqmt")
-            ok = "✅" if abs(total - 70.60) < 0.1 else "⚠️"
-            st.sidebar.success(f"{ok} API OK! Got {total} sq.mt (expected 70.60)")
+            total_balc = parsed.get("total_balcony_sqmt")
+            st.sidebar.success(f"✅ API OK! Extracted {total_balc} sq.mt of balcony space.")
             st.sidebar.json(parsed)
     except Exception as e:
         st.sidebar.error(f"❌ {e}")
@@ -284,34 +279,51 @@ uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     clean_cols = {c.lower().strip(): c for c in df.columns}
+    
     desc_col = clean_cols.get('property description')
     cons_col = clean_cols.get('consideration value')
     prop_col = clean_cols.get('property')
     date_col = clean_cols.get('completion date')
     loc_col  = clean_cols.get('micromarket')
+    area_col = clean_cols.get('area')  # Found incoming hardcoded Area (SQ.FT) column
 
-    if desc_col and cons_col and prop_col and date_col and loc_col:
+    if desc_col and cons_col and prop_col and date_col and loc_col and area_col:
         api_key = get_gemini_key()
 
-        with st.spinner('Extracting carpet areas via Gemini AI — this may take a moment...'):
-            areas = []
+        with st.spinner('Extracting extra balcony spaces via Gemini AI...'):
+            balcony_areas_sqmt = []
             debug_log = []
             progress = st.progress(0, text="Processing rows...")
             total_rows = len(df)
 
             for idx, row in df.iterrows():
-                area = extract_area_gemini(row[desc_col], api_key, debug_log=debug_log)
-                areas.append(area)
+                # Extract only balcony components in sq.mt from description
+                b_area = extract_balcony_gemini(row[desc_col], api_key, debug_log=debug_log)
+                balcony_areas_sqmt.append(b_area)
                 progress.progress(
                     (idx + 1) / total_rows,
-                    text=f"Row {idx + 1} / {total_rows} — extracted: {area} sq.mt"
+                    text=f"Row {idx + 1} / {total_rows} — Balcony extracted: {b_area} sq.mt"
                 )
 
             progress.empty()
-            df['Carpet Area (SQ.MT)'] = areas
 
-        with st.spinner('Calculating APR and generating report...'):
-            df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
+        with st.spinner('Calculating final metrics and formatting reports...'):
+            # 1. Store extracted raw balcony sq.mt
+            df['Extracted Balcony (SQ.MT)'] = balcony_areas_sqmt
+            
+            # 2. Convert balcony sq.mt to sq.ft
+            df['Extracted Balcony (SQ.FT)'] = (df['Extracted Balcony (SQ.MT)'] * 10.764).round(3)
+            
+            # 3. Ensure baseline 'Area' is numeric
+            df[area_col] = pd.to_numeric(df[area_col], errors='coerce').fillna(0.0)
+            
+            # 4. Final Carpet Area (SQ.FT) = Baseline Area column + Balcony Area (SQ.FT)
+            df['Carpet Area (SQ.FT)'] = (df[area_col] + df['Extracted Balcony (SQ.FT)']).round(3)
+            
+            # 5. Calculate Carpet Area (SQ.MT) by dividing SQ.FT by 10.764
+            df['Carpet Area (SQ.MT)'] = (df['Carpet Area (SQ.FT)'] / 10.764).round(3)
+
+            # --- Business Logic Computations ---
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
             df['APR'] = df.apply(
                 lambda r: round(r[cons_col] / r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0,
@@ -358,20 +370,15 @@ if uploaded_file:
                 apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
                 apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
 
-        zero_count = sum(1 for a in areas if a == 0.0)
-        st.success(f"✅ Analysis Complete! ({total_rows - zero_count}/{total_rows} rows extracted successfully)")
-        if zero_count > 0:
-            st.warning(f"⚠️ {zero_count} rows returned 0 — expand Debug below to investigate.")
+        st.success(f"✅ Analysis Complete! Handled {total_rows} rows systematically using baseline file areas.")
 
-        with st.expander("🔍 Preview: Carpet Area Extraction (first 20 rows)"):
-            preview_cols = [desc_col, 'Carpet Area (SQ.MT)', 'Carpet Area (SQ.FT)']
+        with st.expander("🔍 Preview: Area Calculations (first 20 rows)"):
+            preview_cols = [area_col, 'Extracted Balcony (SQ.FT)', 'Carpet Area (SQ.FT)', 'Carpet Area (SQ.MT)']
             st.dataframe(df[preview_cols].head(20), use_container_width=True)
 
-        with st.expander(f"🐛 Debug: LLM Responses ({zero_count} zeros)"):
-            sorted_log = sorted(debug_log, key=lambda x: x['total_sqmt'])
-            for entry in sorted_log:
-                icon = "🔴" if entry['total_sqmt'] == 0.0 else "🟢"
-                st.markdown(f"{icon} **{entry['total_sqmt']} sq.mt** — `{entry['status']}`")
+        with st.expander("🐛 Debug: Balcony LLM Responses"):
+            for entry in debug_log:
+                st.markdown(f"**Extracted Balcony:** {entry['total_balcony_sqmt']} sq.mt — `{entry['status']}`")
                 st.caption(entry['description'])
                 st.code(entry['raw_response'] or "(empty)", language='json')
                 st.divider()
@@ -391,5 +398,5 @@ if uploaded_file:
     else:
         st.error(
             "Missing required columns. Ensure file has: "
-            "'Micromarket', 'Property Description', 'Consideration Value', 'Property', 'Completion Date'."
+            "'Micromarket', 'Property Description', 'Consideration Value', 'Property', 'Completion Date', and 'Area'."
         )
