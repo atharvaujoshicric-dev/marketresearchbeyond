@@ -9,139 +9,11 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from email import encoders
 from openpyxl.styles import Alignment, PatternFill, Border, Side
-import os
-import json
-import time
-import requests
 
 # --- EMAIL CONFIGURATION ---
 SENDER_EMAIL = "atharvaujoshi@gmail.com"
-SENDER_NAME = "Spydarr Market Research"
+SENDER_NAME = "Spydarr Market Research" 
 APP_PASSWORD = "nybl zsnx zvdw edqr"
-
-# --- GEMINI CONFIG ---
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-
-# SYSTEM PROMPT: Focused purely on extracting attached balconies
-SYSTEM_PROMPT = """You are an expert at reading Indian property registration documents written in Marathi and English.
-
-Your ONLY job: extract the carpet area components of ATTACHED BALCONIES, DRY BALCONIES, and TERRACES from the description text and return their SUM in square meters.
-
-DO NOT look for or extract the main flat/apartment carpet area. Only extract attached peripheral spaces.
-
-INCLUDE (these belong to balcony components):
-- Any balcony attached to the flat: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनीエリア, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी, enclosed balcony
-- Dry balcony: ड्राय बाल्कनी, ड्राय बालकनी, dry balcony
-- Utility / utility balcony: युटिलिटी, युटिलिटी बालकनी, utility
-- Terrace attached to flat: लगतचे टेरेस, टेरेस (ONLY if listed alongside a balcony or explicitly attached, NOT if described as open-to-sky or ओपन टेरेस)
-
-EXCLUDE:
-- Main flat carpet area (e.g., "कारपेट क्षेत्र", "carpet area")
-- Land survey areas: anything after स.नं. or सर्व्हे नं.
-- Open terrace / sky: ओपन टेरेस, ओपन टू स्काय
-- Parking spaces or Road areas
-
-UNIT CONVERSION FOR BALCONIES:
-- चौ.मी. / चौ. मी. / sq.mt / sq.m = use as-is (these are square meters)
-- चौ.फूट / चौ.फुट / चौ.फु / sq.ft / चौ.फू = divide by 10.764 to get sq.mt
-- When BOTH units given for same item, use the चौ.मी. value ONLY
-
-OUTPUT FORMAT: Return ONLY a raw JSON object. No markdown, no backticks, no explanation, nothing else.
-{"components":[{"label":"open balcony","value_sqmt":5.99},{"label":"dry balcony","value_sqmt":2.50}],"total_balcony_sqmt":8.49}
-
-If no balconies are mentioned: {"components":[],"total_balcony_sqmt":0.0}"""
-
-
-def get_gemini_key():
-    key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", None)
-    if not key:
-        st.error("GEMINI_API_KEY not found. Add it to your .env or Streamlit secrets.")
-        st.stop()
-    return key
-
-
-def call_gemini_once(api_key, text):
-    """Single Gemini API call. Returns (raw_str, parsed_dict_or_none, error_or_none)."""
-    url = GEMINI_URL.format(model=GEMINI_MODEL, key=api_key)
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"parts": [{"text": str(text)[:4000]}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": 512,
-            "responseMimeType": "application/json"   # forces Gemini to return valid JSON
-        }
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        
-        # FIXED: Resolved the unterminated string literal by formatting the regex on a single line safely
-        clean = re.sub(r"```json|\n```", "", raw).strip()
-        
-        m = re.search(r'\{.*\}', clean, re.DOTALL)
-        if m:
-            clean = m.group(0)
-        parsed = json.loads(clean)
-        return raw, parsed, None
-    except requests.HTTPError as e:
-        body = ""
-        try:
-            body = resp.json()
-        except Exception:
-            body = resp.text
-        return "", None, f"HTTP {resp.status_code}: {body}"
-    except json.JSONDecodeError as e:
-        return raw if 'raw' in dir() else "", None, f"JSON parse error: {e} | raw: {raw[:200]}"
-    except Exception as e:
-        return "", None, f"Error: {e}"
-
-
-def extract_balcony_gemini(text, api_key, debug_log=None):
-    """Extract balcony area (sq.mt) using Gemini with retry."""
-    if pd.isna(text) or str(text).strip() == "":
-        return 0.0
-
-    result_total = 0.0
-    log_entry = {
-        "description": str(text)[:150] + "...",
-        "raw_response": "",
-        "components": [],
-        "total_balcony_sqmt": 0.0,
-        "status": "ok"
-    }
-
-    for attempt in range(3):
-        raw, parsed, error = call_gemini_once(api_key, text)
-        log_entry["raw_response"] = raw
-
-        if error is None and parsed is not None:
-            result_total = round(float(parsed.get("total_balcony_sqmt", 0.0)), 3)
-            log_entry["components"] = parsed.get("components", [])
-            log_entry["total_balcony_sqmt"] = result_total
-            log_entry["status"] = "ok"
-            break
-        else:
-            log_entry["status"] = f"attempt {attempt+1} failed: {error}"
-            if "429" in str(error) or "quota" in str(error).lower():
-                wait = 5 * (attempt + 1)
-                time.sleep(wait)
-            elif attempt < 2:
-                time.sleep(1)
-            else:
-                # Fallback to 0 if LLM fails repeatedly
-                result_total = 0.0
-                log_entry["total_balcony_sqmt"] = result_total
-                log_entry["status"] = f"fallback to 0 after 3 failures: {error}"
-
-    if debug_log is not None:
-        debug_log.append(log_entry)
-
-    return result_total
-
 
 def send_email(recipient_email, excel_data, filename):
     try:
@@ -150,6 +22,7 @@ def send_email(recipient_email, excel_data, filename):
         msg['From'] = formataddr((SENDER_NAME, SENDER_EMAIL))
         msg['To'] = recipient_email
         msg['Subject'] = "Spydarr Market Research Summary"
+        
         body = f"""Dear {recipient_name},
 
 Please find the attached professional property analysis report generated by the dashboard.
@@ -160,12 +33,14 @@ The report includes:
 
 Regards,
 Atharva Joshi"""
+
         msg.attach(MIMEText(body, 'plain'))
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
         encoders.encode_base64(part)
         part.add_header('Content-Disposition', f"attachment; filename={filename}")
         msg.attach(part)
+        
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(SENDER_EMAIL, APP_PASSWORD)
@@ -176,6 +51,42 @@ Atharva Joshi"""
         st.error(f"Error sending email: {e}")
         return False
 
+def extract_balcony_sqft(text):
+    """
+    Extracts ONLY balcony areas specified in SQ.MT from the description
+    and converts them directly to SQ.FT. Ignores terraces.
+    """
+    if pd.isna(text) or text == "": 
+        return 0.0
+    
+    # Standardize string structure
+    text = " ".join(str(text).split())
+    text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
+    text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
+    text = re.sub(r'(\d),(\d)', r'\1\2', text)
+    
+    # Specific keywords for target unit (SQ.MT variants)
+    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*mTR?\.?|square\s*meter(?:s)?)'
+    
+    # Find all pattern sequences of digits next to SQ.MT units
+    balcony_added_sqft = 0.0
+    
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', text, re.IGNORECASE):
+        val_sqmt = float(match.group(1))
+        start_idx = match.start()
+        
+        # Look behind to make sure it belongs specifically to a balcony context
+        context_before = text[max(0, start_idx-60):start_idx].lower()
+        
+        is_balcony = any(kw in context_before for kw in ["बाल्कनी", "balcony", "युटिलिटी", "utility", "ड्राय"])
+        is_terrace = any(kw in context_before for kw in ["टेरेस", "terrace", "ओपन"])
+        
+        # Capture context if it is a balcony component but strictly NOT a terrace layout
+        if is_balcony and not is_terrace:
+            if 0.2 <= val_sqmt < 50.0:  # Logical range checks for individual balcony rooms
+                balcony_added_sqft += (val_sqmt * 10.764)
+                
+    return balcony_added_sqft
 
 def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
@@ -184,22 +95,19 @@ def determine_config(area, t1, t2, t3):
     elif area < t3: return "3 BHK"
     else: return "4 BHK"
 
-
 def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     worksheet = writer.sheets[sheet_name]
     worksheet.freeze_panes = "A2"
     center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
-                         top=Side(style='thin'), bottom=Side(style='thin'))
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     colors = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
-
+    
     for i in range(1, worksheet.max_row + 1):
         for j in range(1, worksheet.max_column + 1):
             cell = worksheet.cell(row=i, column=j)
             cell.alignment = center_align
-            if is_summary:
-                cell.border = thin_border
+            if is_summary: cell.border = thin_border
 
     if is_summary:
         color_idx, start_row_prop = 0, 2
@@ -208,22 +116,19 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
         white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
         for i in range(2, len(df) + 3):
-            curr_loc  = df.iloc[i-2, 0] if i-2 < len(df) else None
-            prev_loc  = df.iloc[i-3, 0] if i-3 >= 0 else None
+            curr_loc = df.iloc[i-2, 0] if i-2 < len(df) else None
+            prev_loc = df.iloc[i-3, 0] if i-3 >= 0 else None
             curr_prop = df.iloc[i-2, 1] if i-2 < len(df) else None
             prev_prop = df.iloc[i-3, 1] if i-3 >= 0 else None
-
+            
             if curr_prop != prev_prop and i > 2:
-                fill = PatternFill(start_color=colors[color_idx % len(colors)],
-                                   end_color=colors[color_idx % len(colors)], fill_type="solid")
+                fill = PatternFill(start_color=colors[color_idx % len(colors)], end_color=colors[color_idx % len(colors)], fill_type="solid")
                 for r in range(start_row_prop, i):
                     for c in range(2, last_col + 1):
                         worksheet.cell(row=r, column=c).fill = fill
                 if i-1 > start_row_prop:
-                    worksheet.merge_cells(start_row=start_row_prop, start_column=2,
-                                          end_row=i-1, end_column=2)
-                    worksheet.merge_cells(start_row=start_row_prop, start_column=last_col,
-                                          end_row=i-1, end_column=last_col)
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=2, end_row=i-1, end_column=2)
+                    worksheet.merge_cells(start_row=start_row_prop, start_column=last_col, end_row=i-1, end_column=last_col)
                 start_row_prop = i
                 color_idx += 1
 
@@ -231,53 +136,23 @@ def apply_excel_formatting(df, writer, sheet_name, is_summary=True):
                 for r in range(start_row_loc, i):
                     worksheet.cell(row=r, column=1).fill = white_fill
                 if i-1 > start_row_loc:
-                    worksheet.merge_cells(start_row=start_row_loc, start_column=1,
-                                          end_row=i-1, end_column=1)
+                    worksheet.merge_cells(start_row=start_row_loc, start_column=1, end_row=i-1, end_column=1)
                 start_row_loc = i
 
-
-# ─────────────────────────────────────────
-# STREAMLIT UI
-# ─────────────────────────────────────────
+# --- STREAMLIT UI ---
 st.set_page_config(page_title="Spydarr Dashboard", layout="wide")
 st.title("Spydarr Dashboard")
-st.markdown(
-    "<div style='margin-top:-15px;margin-bottom:5px;'>"
-    "<span style='background-color:#FFFF00;padding:2px 8px;border-radius:4px;"
-    "border:1px solid #E6E600;font-size:0.9em;color:black;'>"
-    "<u><strong>NOTE :-</strong> Please cross-check the report manually.</u></span></div>",
-    unsafe_allow_html=True
-)
+st.markdown("<div style='margin-top: -15px; margin-bottom: 5px;'><span style='background-color: #FFFF00; padding: 2px 8px; border-radius: 4px; border: 1px solid #E6E600; font-size: 0.9em; color: black;'><u><strong>NOTE :-</strong> Please cross-check the report manually.</u></span></div>", unsafe_allow_html=True)
 st.markdown("[Property Report Tool · Streamlit](https://summarybeyondwalls.streamlit.app/)")
 st.divider()
 
-# ── Sidebar ──────────────────────────────
 st.sidebar.header("Calculation Settings")
 loading_factor = st.sidebar.number_input("Loading Factor", min_value=1.0, value=1.35, step=0.001, format="%.3f")
-t1 = st.sidebar.number_input("1 BHK Threshold (sq.ft)", value=600)
-t2 = st.sidebar.number_input("2 BHK Threshold (sq.ft)", value=850)
-t3 = st.sidebar.number_input("3 BHK Threshold (sq.ft)", value=1100)
+t1 = st.sidebar.number_input("1 BHK Threshold", value=600)
+t2 = st.sidebar.number_input("2 BHK Threshold", value=850)
+t3 = st.sidebar.number_input("3 BHK Threshold", value=1100)
 
-st.sidebar.divider()
-st.sidebar.header("🔧 Gemini API Test")
-st.sidebar.caption("Click to confirm your API key works before uploading a file.")
-if st.sidebar.button("▶ Test Gemini API"):
-    test_text = "फ्लॅट नं. 402, कारपेट क्षेत्र 64.61 चौ. मी., ओपन बाल्कनी क्षेत्र 5.99 चौ.मी., ड्राय बालकनी क्षेत्र 2.50 चौ.मी."
-    try:
-        key = get_gemini_key()
-        raw, parsed, error = call_gemini_once(key, test_text)
-        if error:
-            st.sidebar.error(f"❌ Error:\n{error}")
-        else:
-            total_balc = parsed.get("total_balcony_sqmt")
-            st.sidebar.success(f"✅ API OK! Extracted {total_balc} sq.mt of balcony space.")
-            st.sidebar.json(parsed)
-    except Exception as e:
-        st.sidebar.error(f"❌ {e}")
-
-# ── File Upload ───────────────────────────
 uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
-
 if uploaded_file:
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     clean_cols = {c.lower().strip(): c for c in df.columns}
@@ -286,119 +161,58 @@ if uploaded_file:
     cons_col = clean_cols.get('consideration value')
     prop_col = clean_cols.get('property')
     date_col = clean_cols.get('completion date')
-    loc_col  = clean_cols.get('micromarket')
-    area_col = clean_cols.get('area')  # Found incoming hardcoded Area (SQ.FT) column
-
+    loc_col = clean_cols.get('micromarket')
+    area_col = clean_cols.get('area') # New Area column tracking assignment
+    
     if desc_col and cons_col and prop_col and date_col and loc_col and area_col:
-        api_key = get_gemini_key()
-
-        with st.spinner('Extracting extra balcony spaces via Gemini AI...'):
-            balcony_areas_sqmt = []
-            debug_log = []
-            progress = st.progress(0, text="Processing rows...")
-            total_rows = len(df)
-
-            for idx, row in df.iterrows():
-                # Extract only balcony components in sq.mt from description
-                b_area = extract_balcony_gemini(row[desc_col], api_key, debug_log=debug_log)
-                balcony_areas_sqmt.append(b_area)
-                progress.progress(
-                    (idx + 1) / total_rows,
-                    text=f"Row {idx + 1} / {total_rows} — Balcony extracted: {b_area} sq.mt"
-                )
-
-            progress.empty()
-
-        with st.spinner('Calculating final metrics and formatting reports...'):
-            # 1. Store extracted raw balcony sq.mt
-            df['Extracted Balcony (SQ.MT)'] = balcony_areas_sqmt
+        with st.spinner('Calculating...'):
+            # Convert base area column to numeric safely (coercing errors to 0 if text occurs)
+            base_area_sqft = pd.to_numeric(df[area_col], errors='coerce').fillna(0.0)
             
-            # 2. Convert balcony sq.mt to sq.ft
-            df['Extracted Balcony (SQ.FT)'] = (df['Extracted Balcony (SQ.MT)'] * 10.764).round(3)
+            # Step 1: Calculate isolated balcony sizes found in the description text string (converted to SQFT)
+            balcony_sqft_additions = df[desc_col].apply(extract_balcony_sqft)
             
-            # 3. Ensure baseline 'Area' is numeric
-            df[area_col] = pd.to_numeric(df[area_col], errors='coerce').fillna(0.0)
+            # Step 2: Combine base structural SQ.FT with balcony additions
+            df['Carpet Area (SQ.FT)'] = (base_area_sqft + balcony_sqft_additions).round(3)
             
-            # 4. Final Carpet Area (SQ.FT) = Baseline Area column + Balcony Area (SQ.FT)
-            df['Carpet Area (SQ.FT)'] = (df[area_col] + df['Extracted Balcony (SQ.FT)']).round(3)
-            
-            # 5. Calculate Carpet Area (SQ.MT) by dividing SQ.FT by 10.764
+            # Step 3: Back-convert finalized metric down into the SQ.MT target field
             df['Carpet Area (SQ.MT)'] = (df['Carpet Area (SQ.FT)'] / 10.764).round(3)
-
-            # --- Business Logic Computations ---
+            
+            # Process calculations tracking saleable margins and configurations
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
-            df['APR'] = df.apply(
-                lambda r: round(r[cons_col] / r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0,
-                axis=1
-            )
-            df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(
-                lambda x: determine_config(x, t1, t2, t3)
-            )
+            df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
+            df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-
-            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values(
-                [loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']
-            )
+            
+            valid_df = df[df['Carpet Area (SQ.FT)'] > 0].sort_values([loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)'])
+            
             project_counts = valid_df.groupby(prop_col).size().reset_index(name='Total Count')
-            summary = valid_df.groupby(
-                [loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']
-            ).agg(
+            summary = valid_df.groupby([loc_col, prop_col, 'Configuration', 'Carpet Area (SQ.FT)']).agg(
                 Last_Date=(date_col, 'max'),
-                Min_APR=('APR', 'min'),
-                Max_APR=('APR', 'max'),
+                Min_APR=('APR', 'min'), 
+                Max_APR=('APR', 'max'), 
                 Avg_APR=('APR', 'mean'),
                 Median_APR=('APR', 'median'),
                 Property_Count=(prop_col, 'count')
             ).reset_index()
-
+            
             summary = summary.merge(project_counts, on=prop_col, how='left')
             summary['Last_Date'] = pd.to_datetime(summary['Last_Date'], errors='coerce')
-            summary['Last_Date'] = summary['Last_Date'].apply(
-                lambda x: x.strftime('%b-%Y') if pd.notnull(x) else "N/A"
-            )
-            summary.columns = [
-                'Location', 'Property', 'Configuration', 'Carpet Area(SQ.FT)',
-                'Last Completion Date', 'Min. APR', 'Max APR',
-                'Average of APR', 'Median of APR', 'Count of Property', 'Total Count'
-            ]
-            summary = summary[[
-                'Location', 'Property', 'Last Completion Date', 'Configuration',
-                'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR',
-                'Average of APR', 'Median of APR', 'Count of Property', 'Total Count'
-            ]]
+            summary['Last_Date'] = summary['Last_Date'].apply(lambda x: x.strftime('%b-%Y') if pd.notnull(x) else "N/A")
+            
+            summary.columns = ['Location', 'Property', 'Configuration', 'Carpet Area(SQ.FT)', 'Last Completion Date', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']
+            summary = summary[['Location', 'Property', 'Last Completion Date', 'Configuration', 'Carpet Area(SQ.FT)', 'Min. APR', 'Max APR', 'Average of APR', 'Median of APR', 'Count of Property', 'Total Count']]
 
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 apply_excel_formatting(df, writer, 'Raw Data', is_summary=False)
                 apply_excel_formatting(summary, writer, 'Summary', is_summary=True)
-
-        st.success(f"✅ Analysis Complete! Handled {total_rows} rows systematically using baseline file areas.")
-
-        with st.expander("🔍 Preview: Area Calculations (first 20 rows)"):
-            preview_cols = [area_col, 'Extracted Balcony (SQ.FT)', 'Carpet Area (SQ.FT)', 'Carpet Area (SQ.MT)']
-            st.dataframe(df[preview_cols].head(20), use_container_width=True)
-
-        with st.expander("🐛 Debug: Balcony LLM Responses"):
-            for entry in debug_log:
-                st.markdown(f"**Extracted Balcony:** {entry['total_balcony_sqmt']} sq.mt — `{entry['status']}`")
-                st.caption(entry['description'])
-                st.code(entry['raw_response'] or "(empty)", language='json')
-                st.divider()
-
+            
+            st.success("Analysis Complete!")
             recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
             if st.button("Send to Email") and recipient:
                 full_email = f"{recipient.strip().lower()}@beyondwalls.com"
                 if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
-                    st.success(f"✅ Report sent to {full_email}")
-
-        st.download_button(
-            label="⬇️ Download Report",
-            data=output.getvalue(),
-            file_name="Spydarr_Market_Report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+                    st.success(f"Report sent to {full_email}")
     else:
-        st.error(
-            "Missing required columns. Ensure file has: "
-            "'Micromarket', 'Property Description', 'Consideration Value', 'Property', 'Completion Date', and 'Area'."
-        )
+        st.error("Missing required columns. Ensure file has 'Area', 'Micromarket', 'Property Description', 'Consideration Value', 'Property', and 'Completion Date'.")
