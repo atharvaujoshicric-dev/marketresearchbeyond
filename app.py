@@ -23,7 +23,7 @@ APP_PASSWORD = "nybl zsnx zvdw edqr"
 GEMINI_MODEL = "gemini-2.0-flash"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
-# UPDATED SYSTEM PROMPT: Focused purely on extracting attached balconies
+# SYSTEM PROMPT: Focused purely on extracting attached balconies
 SYSTEM_PROMPT = """You are an expert at reading Indian property registration documents written in Marathi and English.
 
 Your ONLY job: extract the carpet area components of ATTACHED BALCONIES, DRY BALCONIES, and TERRACES from the description text and return their SUM in square meters.
@@ -31,7 +31,7 @@ Your ONLY job: extract the carpet area components of ATTACHED BALCONIES, DRY BAL
 DO NOT look for or extract the main flat/apartment carpet area. Only extract attached peripheral spaces.
 
 INCLUDE (these belong to balcony components):
-- Any balcony attached to the flat: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनी एरिया, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी, enclosed balcony
+- Any balcony attached to the flat: बाल्कनी, बालकनी, ओपन बाल्कनी, ओपन बालकनी, बाल्कनीエリア, बालकनी एरिया, अटॅच बाल्कनी, एन्क्लोज बाल्कनी, लगतेच बाल्कनी, enclosed balcony
 - Dry balcony: ड्राय बाल्कनी, ड्राय बालकनी, dry balcony
 - Utility / utility balcony: युटिलिटी, युटिलिटी बालकनी, utility
 - Terrace attached to flat: लगतचे टेरेस, टेरेस (ONLY if listed alongside a balcony or explicitly attached, NOT if described as open-to-sky or ओपन टेरेस)
@@ -78,8 +78,10 @@ def call_gemini_once(api_key, text):
         resp.raise_for_status()
         data = resp.json()
         raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        clean = re.sub(r"```json|
-```", "", raw).strip()
+        
+        # FIXED: Resolved the unterminated string literal by formatting the regex on a single line safely
+        clean = re.sub(r"```json|\n```", "", raw).strip()
+        
         m = re.search(r'\{.*\}', clean, re.DOTALL)
         if m:
             clean = m.group(0)
@@ -383,11 +385,11 @@ if uploaded_file:
                 st.code(entry['raw_response'] or "(empty)", language='json')
                 st.divider()
 
-        recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
-        if st.button("Send to Email") and recipient:
-            full_email = f"{recipient.strip().lower()}@beyondwalls.com"
-            if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
-                st.success(f"✅ Report sent to {full_email}")
+            recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
+            if st.button("Send to Email") and recipient:
+                full_email = f"{recipient.strip().lower()}@beyondwalls.com"
+                if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
+                    st.success(f"✅ Report sent to {full_email}")
 
         st.download_button(
             label="⬇️ Download Report",
