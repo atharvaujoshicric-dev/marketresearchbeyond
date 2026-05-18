@@ -53,8 +53,8 @@ Atharva Joshi"""
 
 def extract_balcony_sqft(text):
     """
-    Extracts ONLY balcony areas specified in SQ.MT from the description
-    and converts them directly to SQ.FT. Ignores terraces.
+    Extracts ONLY balcony areas specified in SQ.MT from the description,
+    converts them to SQ.FT, and strictly ignores totals and terraces.
     """
     if pd.isna(text) or text == "": 
         return 0.0
@@ -68,22 +68,24 @@ def extract_balcony_sqft(text):
     # Specific keywords for target unit (SQ.MT variants)
     m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*mTR?\.?|square\s*meter(?:s)?)'
     
-    # Find all pattern sequences of digits next to SQ.MT units
     balcony_added_sqft = 0.0
     
     for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', text, re.IGNORECASE):
         val_sqmt = float(match.group(1))
         start_idx = match.start()
         
-        # Look behind to make sure it belongs specifically to a balcony context
+        # Look behind to inspect context modifiers
         context_before = text[max(0, start_idx-60):start_idx].lower()
         
-        is_balcony = any(kw in context_before for kw in ["बाल्कनी", "balcony", "युटिलिटी", "utility", "ड्राय"])
+        # Absolute Exclusions: If it's labeled as a grand total or a terrace, skip it entirely
+        is_total_summary = any(kw in context_before for kw in ["एकूण", "ekun", "total"])
         is_terrace = any(kw in context_before for kw in ["टेरेस", "terrace", "ओपन"])
         
-        # Capture context if it is a balcony component but strictly NOT a terrace layout
-        if is_balcony and not is_terrace:
-            if 0.2 <= val_sqmt < 50.0:  # Logical range checks for individual balcony rooms
+        # Target Match: Must be balcony/utility related
+        is_balcony = any(kw in context_before for kw in ["बाल्कनी", "balcony", "युटिलिटी", "utility", "ड्राय"])
+        
+        if is_balcony and not is_terrace and not is_total_summary:
+            if 0.2 <= val_sqmt < 50.0:  # Logical threshold barrier for individual balconies
                 balcony_added_sqft += (val_sqmt * 10.764)
                 
     return balcony_added_sqft
@@ -162,23 +164,22 @@ if uploaded_file:
     prop_col = clean_cols.get('property')
     date_col = clean_cols.get('completion date')
     loc_col = clean_cols.get('micromarket')
-    area_col = clean_cols.get('area') # New Area column tracking assignment
+    area_col = clean_cols.get('area')
     
     if desc_col and cons_col and prop_col and date_col and loc_col and area_col:
         with st.spinner('Calculating...'):
-            # Convert base area column to numeric safely (coercing errors to 0 if text occurs)
             base_area_sqft = pd.to_numeric(df[area_col], errors='coerce').fillna(0.0)
             
-            # Step 1: Calculate isolated balcony sizes found in the description text string (converted to SQFT)
+            # Step 1: Extract individual balcony strings while filtering out total sums
             balcony_sqft_additions = df[desc_col].apply(extract_balcony_sqft)
             
-            # Step 2: Combine base structural SQ.FT with balcony additions
+            # Step 2: Combine original file base SQFT with parsed balcony additions
             df['Carpet Area (SQ.FT)'] = (base_area_sqft + balcony_sqft_additions).round(3)
             
-            # Step 3: Back-convert finalized metric down into the SQ.MT target field
+            # Step 3: Produce matching back-conversion for structural SQ.MT targets
             df['Carpet Area (SQ.MT)'] = (df['Carpet Area (SQ.FT)'] / 10.764).round(3)
             
-            # Process calculations tracking saleable margins and configurations
+            # Follow-up standard operational loops
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
             df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
