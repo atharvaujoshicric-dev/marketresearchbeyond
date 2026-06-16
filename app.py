@@ -53,8 +53,8 @@ Atharva Joshi"""
 
 def extract_balcony_sqft(text):
     """
-    Extracts ONLY balcony areas specified in SQ.MT from the description,
-    converts them to SQ.FT, and strictly ignores totals and terraces.
+    Extracts individual balcony categories (enclosed, open, dry, utility) specified in SQ.MT,
+    converts them to SQ.FT, and ignores absolute totals and main terraces.
     """
     if pd.isna(text) or text == "": 
         return 0.0
@@ -70,25 +70,36 @@ def extract_balcony_sqft(text):
     
     balcony_added_sqft = 0.0
     
+    # Search for numeric values tied to square meter labels
     for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', text, re.IGNORECASE):
         val_sqmt = float(match.group(1))
         start_idx = match.start()
         
         # Look behind to inspect context modifiers
-        context_before = text[max(0, start_idx-60):start_idx].lower()
+        context_before = text[max(0, start_idx-75):start_idx].lower()
         
-        # Absolute Exclusions: If it's labeled as a grand total or a terrace, skip it entirely
+        # Absolute Exclusions: Ignore grand totals or massive terrace sections
         is_total_summary = any(kw in context_before for kw in ["एकूण", "ekun", "total"])
-        is_terrace = any(kw in context_before for kw in ["टेरेस", "terrace", "ओपन"])
+        is_terrace = any(kw in context_before for kw in ["टेरेस", "terrace"])
         
-        # Target Match: Must be balcony/utility related
-        is_balcony = any(kw in context_before for kw in ["बाल्कनी", "balcony", "युटिलिटी", "utility", "ड्राय"])
+        # Explicit Targets: Matches all variants of open, enclosed, dry balconies, and utility spaces
+        is_balcony = any(kw in context_before for kw in [
+            "बाल्कनी", "balcony", "युटिलिटी", "utility", "ड्राय", "dry", 
+            "enclosed", "open", "एन्क्लोज्ड", "ओपन"
+        ])
         
         if is_balcony and not is_terrace and not is_total_summary:
-            if 0.2 <= val_sqmt < 50.0:  # Logical threshold barrier for individual balconies
+            if 0.2 <= val_sqmt < 50.0:  # Safety threshold to block raw plot/carpet sizes
                 balcony_added_sqft += (val_sqmt * 10.764)
                 
     return balcony_added_sqft
+
+def check_mhada(text):
+    """Checks if MHADA is mentioned in the description (English or Marathi)."""
+    if pd.isna(text):
+        return False
+    text = str(text).lower()
+    return "mhada" in text or "म्हाडा" in text
 
 def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
@@ -178,6 +189,12 @@ if uploaded_file:
             
             # Step 3: Produce matching back-conversion for structural SQ.MT targets
             df['Carpet Area (SQ.MT)'] = (df['Carpet Area (SQ.FT)'] / 10.764).round(3)
+            
+            # Step 4: Append MHADA label to Property Name if found in description
+            df[prop_col] = df.apply(
+                lambda r: f"{str(r[prop_col])} (MHADA)" if check_mhada(r[desc_col]) and "(MHADA)" not in str(r[prop_col]) else str(r[prop_col]), 
+                axis=1
+            )
             
             # Follow-up standard operational loops
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
