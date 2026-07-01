@@ -51,55 +51,155 @@ Atharva Joshi"""
         st.error(f"Error sending email: {e}")
         return False
 
-def extract_balcony_sqft(text):
-    """
-    Extracts individual balcony categories (enclosed, open, dry, utility) specified in SQ.MT,
-    converts them to SQ.FT, and ignores absolute totals and main terraces.
-    """
-    if pd.isna(text) or text == "": 
-        return 0.0
-    
-    # Standardize string structure
+# --- SHARED UNIT PATTERNS ---
+# Pulled out to module level so both extract_area_logic() and
+# extract_additional_areas() can reuse the exact same unit matching.
+M_UNIT = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*(?:कारपेट|कार्पेट|चटई क्षेत्र))?(?:\s*(?:एरिया|area|क्षेत्र))?'
+F_UNIT = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फु[टत]?|चौ[\.\s]*फू[टत]?|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*(?:area|क्षेत्र))?'
+
+# Keywords that mark balcony / utility / terrace / open / enclosed areas
+ADDITIONAL_AREA_KEYWORDS = [
+    "बाल्कनी", "बाल्कनीचे", "बाल्कनीच्या", "बाल्कनीसह", "बाल्कनीसाठी",
+    "टेरेस", "टेरेसचे", "टेरेसच्या", "गच्ची", "गच्चीचे",
+    "युटिलिटी", "यूटिलिटी", "utility",
+    "balcony", "terrace",
+    "एनक्लोज्ड", "enclosed",
+    "ओपन", "open"
+]
+
+def _clean_number_text(text):
     text = " ".join(str(text).split())
+    text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
     text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
     text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
+    text = re.sub(r'(\d+\.\d+)\.', r'\1', text)
+    text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text)
     text = re.sub(r'(\d),(\d)', r'\1\2', text)
-    
-    # Specific keywords for target unit (SQ.MT variants)
-    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*mTR?\.?|square\s*meter(?:s)?)'
-    
-    balcony_added_sqft = 0.0
-    
-    # Search for numeric values tied to square meter labels
-    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', text, re.IGNORECASE):
-        val_sqmt = float(match.group(1))
-        start_idx = match.start()
-        
-        # Look behind to inspect context modifiers
-        context_before = text[max(0, start_idx-75):start_idx].lower()
-        
-        # Absolute Exclusions: Ignore grand totals or massive terrace sections
-        is_total_summary = any(kw in context_before for kw in ["एकूण", "ekun", "total"])
-        is_terrace = any(kw in context_before for kw in ["टेरेस", "terrace"])
-        
-        # Explicit Targets: Matches all variants of open, enclosed, dry balconies, and utility spaces
-        is_balcony = any(kw in context_before for kw in [
-            "बाल्कनी", "balcony", "युटिलिटी", "utility", "ड्राय", "dry", 
-            "enclosed", "open", "एन्क्लोज्ड", "ओपन"
-        ])
-        
-        if is_balcony and not is_terrace and not is_total_summary:
-            if 0.2 <= val_sqmt < 50.0:  # Safety threshold to block raw plot/carpet sizes
-                balcony_added_sqft += (val_sqmt * 10.764)
-                
-    return balcony_added_sqft
+    return text
 
-def check_mhada(text):
-    """Checks if MHADA is mentioned in the description (English or Marathi)."""
-    if pd.isna(text):
-        return False
-    text = str(text).lower()
-    return "mhada" in text or "म्हाडा" in text
+def extract_area_logic(text):
+    if pd.isna(text) or text == "": return 0.0
+    
+    # 1. CLEANUP & FIX: Standardize whitespace and common typos
+    text = _clean_number_text(text)
+    text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
+
+    # 2. UNIT PATTERNS (module-level M_UNIT / F_UNIT)
+    m_unit = M_UNIT
+    f_unit = F_UNIT
+    
+    # 3. FOCUS LOGIC: isolate unit details from land stats
+    boundary_keywords = r'(?:येथील|मिळकतीवर|मिळकतीवरील|बांधण्यात|बांधत|प्रकल्पातील|गृहप्रकल्पातील|इमारतप्रकल्पातील|योजनेतील|नियोजित|इमारतीमधील|बिल्डींग|बिल्डिंग|प्रकल्प|टावर|टॉवर|प्रिस्टीन|सेक्टर|क्लस्टर)'
+    parts = re.split(boundary_keywords, text, flags=re.IGNORECASE)
+    relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
+
+    # Balcony/utility/terrace/open/enclosed keywords are excluded from the base
+    # sum here too, so those values are only ever captured once — by
+    # extract_additional_areas() — and never double-counted as flat area.
+    exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन", "दर", "rate", "७/१२", "नाकाश"] + [k.lower() for k in ADDITIONAL_AREA_KEYWORDS]
+    
+    # 4. METRIC SUMMATION
+    # NOTE: balcony/utility/terrace small-component capture has been moved out
+    # to extract_additional_areas() below, so it is no longer summed in here.
+    # This avoids double-counting once those areas get conditionally added
+    # back in based on the "Area Type" column.
+    m_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', relevant_text, re.IGNORECASE):
+        val = float(match.group(1))
+        start_idx = match.start()
+        context_before = relevant_text[max(0, start_idx-60):start_idx].lower()
+        bracket_context = relevant_text[max(0, start_idx-150):start_idx]
+        is_rera_duplicate = "(" in bracket_context and "रेरा" in bracket_context and ")" not in bracket_context
+        
+        if not any(word in context_before for word in exclude_keywords):
+            if 2.0 <= val < 900 and not is_rera_duplicate:
+                if not m_vals or val != m_vals[-1]:
+                    m_vals.append(val)
+            
+    if m_vals:
+        if len(m_vals) > 1:
+            for i in range(1, len(m_vals)):
+                if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
+                    return round(m_vals[i], 3)
+        return round(sum(m_vals), 3)
+
+    # 5. IMPERIAL SUMMATION FALLBACK
+    f_vals = []
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', relevant_text, re.IGNORECASE):
+        val = float(match.group(1))
+        start_idx = match.start()
+        context_before = relevant_text[max(0, match.start()-60):start_idx].lower()
+        if not any(word in context_before for word in exclude_keywords):
+            if 20.0 <= val < 9000:
+                if not f_vals or val != f_vals[-1]:
+                    f_vals.append(val)
+                
+    if f_vals:
+        if len(f_vals) > 1:
+            for i in range(1, len(f_vals)):
+                if abs(f_vals[i] - sum(f_vals[:i])) < 5.0:
+                    return round(f_vals[i] / 10.764, 3)
+        return round(sum(f_vals) / 10.764, 3)
+        
+    return 0.0
+
+def extract_additional_areas(text):
+    """
+    Sum balcony / utility / terrace / open / enclosed areas mentioned anywhere
+    in the property description. This is only added on top of the base carpet
+    area when Area Type == 'Carpet' (see main pipeline below), since a
+    'Useable'/'Saleable' figure would typically already include these.
+    """
+    if pd.isna(text) or text == "":
+        return 0.0
+
+    text = _clean_number_text(text)
+    total_sqm = 0.0
+    seen_vals = set()
+
+    def has_keyword_nearby(pos):
+        window = text[max(0, pos - 70): pos + 70].lower()
+        return any(kw.lower() in window for kw in ADDITIONAL_AREA_KEYWORDS)
+
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{M_UNIT}', text, re.IGNORECASE):
+        val = float(match.group(1))
+        key = ('m', val, match.start() // 70)  # allow same value at different mentions
+        if has_keyword_nearby(match.start()) and 0 < val < 50 and key not in seen_vals:
+            total_sqm += val
+            seen_vals.add(key)
+
+    for match in re.finditer(rf'(\d+\.?\d*)\s?{F_UNIT}', text, re.IGNORECASE):
+        val = float(match.group(1))
+        key = ('f', val, match.start() // 70)
+        if has_keyword_nearby(match.start()) and 0 < val < 500 and key not in seen_vals:
+            total_sqm += val / 10.764
+            seen_vals.add(key)
+
+    return round(total_sqm, 3)
+
+def propagate_area_type(df, prop_col, area_type_col):
+    """
+    If ANY transaction for a given Property has its Area Type explicitly
+    marked 'Carpet' or 'Useable', apply that same Area Type to every OTHER
+    transaction of that property that currently has a blank/missing Area Type.
+    Existing non-blank values are left as-is.
+    """
+    original = df[area_type_col].astype(str).str.strip()
+    norm = original.str.lower().replace({'nan': '', 'none': '', 'usable': 'useable'})
+
+    def resolve(group):
+        ref = next((v for v in group if v in ('carpet', 'useable')), None)
+        if ref is None:
+            return group
+        return group.mask(group == '', ref)
+
+    filled_norm = norm.groupby(df[prop_col]).transform(resolve)
+
+    result = original.copy()
+    was_blank = norm == ''
+    got_filled = was_blank & (filled_norm != '')
+    result.loc[got_filled] = filled_norm.loc[got_filled].map({'carpet': 'Carpet', 'useable': 'Useable'})
+    return result
 
 def determine_config(area, t1, t2, t3):
     if area == 0: return "N/A"
@@ -169,34 +269,34 @@ uploaded_file = st.file_uploader("Upload Data File", type=["xlsx", "csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
     clean_cols = {c.lower().strip(): c for c in df.columns}
-    
     desc_col = clean_cols.get('property description')
     cons_col = clean_cols.get('consideration value')
     prop_col = clean_cols.get('property')
     date_col = clean_cols.get('completion date')
     loc_col = clean_cols.get('micromarket')
-    area_col = clean_cols.get('area')
+    area_type_col = clean_cols.get('area type')  # optional column
     
-    if desc_col and cons_col and prop_col and date_col and loc_col and area_col:
+    if desc_col and cons_col and prop_col and date_col and loc_col:
         with st.spinner('Calculating...'):
-            base_area_sqft = pd.to_numeric(df[area_col], errors='coerce').fillna(0.0)
-            
-            # Step 1: Extract individual balcony strings while filtering out total sums
-            balcony_sqft_additions = df[desc_col].apply(extract_balcony_sqft)
-            
-            # Step 2: Combine original file base SQFT with parsed balcony additions
-            df['Carpet Area (SQ.FT)'] = (base_area_sqft + balcony_sqft_additions).round(3)
-            
-            # Step 3: Produce matching back-conversion for structural SQ.MT targets
-            df['Carpet Area (SQ.MT)'] = (df['Carpet Area (SQ.FT)'] / 10.764).round(3)
-            
-            # Step 4: Append MHADA label to Property Name if found in description
-            df[prop_col] = df.apply(
-                lambda r: f"{str(r[prop_col])} (MHADA)" if check_mhada(r[desc_col]) and "(MHADA)" not in str(r[prop_col]) else str(r[prop_col]), 
-                axis=1
-            )
-            
-            # Follow-up standard operational loops
+            # Base carpet area extraction (balcony/utility/terrace NOT included here anymore)
+            df['Carpet Area (SQ.MT)'] = df[desc_col].apply(extract_area_logic)
+            df['Additional Area (SQ.MT)'] = df[desc_col].apply(extract_additional_areas)
+
+            if area_type_col:
+                # Propagate 'Carpet'/'Useable' Area Type across all transactions
+                # of the same property, filling in blanks.
+                df[area_type_col] = propagate_area_type(df, prop_col, area_type_col)
+                is_carpet = df[area_type_col].astype(str).str.strip().str.lower().eq('carpet')
+
+                # Only add balcony/utility/terrace/open/enclosed areas when
+                # Area Type is Carpet (Useable/Saleable figures already include them)
+                df.loc[is_carpet, 'Carpet Area (SQ.MT)'] = (
+                    df.loc[is_carpet, 'Carpet Area (SQ.MT)'] + df.loc[is_carpet, 'Additional Area (SQ.MT)']
+                ).round(3)
+            else:
+                st.warning("No 'Area Type' column found — additional balcony/utility/terrace areas were NOT added to any row. Add an 'Area Type' column (values: Carpet / Useable) to enable this.")
+
+            df['Carpet Area (SQ.FT)'] = (df['Carpet Area (SQ.MT)'] * 10.764).round(3)
             df['Saleable Area'] = (df['Carpet Area (SQ.FT)'] * loading_factor).round(3)
             df['APR'] = df.apply(lambda r: round(r[cons_col]/r['Saleable Area'], 3) if r['Saleable Area'] > 0 else 0, axis=1)
             df['Configuration'] = df['Carpet Area (SQ.FT)'].apply(lambda x: determine_config(x, t1, t2, t3))
@@ -233,4 +333,4 @@ if uploaded_file:
                 if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
                     st.success(f"Report sent to {full_email}")
     else:
-        st.error("Missing required columns. Ensure file has 'Area', 'Micromarket', 'Property Description', 'Consideration Value', 'Property', and 'Completion Date'.")
+        st.error("Missing required columns. Ensure file has 'Micromarket', 'Property Description', 'Consideration Value', 'Property', and 'Completion Date'.")
