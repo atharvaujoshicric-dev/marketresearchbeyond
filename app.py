@@ -428,12 +428,6 @@ if uploaded_file:
         st.success("Analysis Complete!")
         st.dataframe(summary, use_container_width=True)
 
-        st.download_button(
-            "Download Report",
-            data=output.getvalue(),
-            file_name="Spydarr_Market_Report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
 
         st.divider()
         recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
