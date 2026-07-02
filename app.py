@@ -51,35 +51,48 @@ Atharva Joshi"""
         st.error(f"Error sending email: {e}")
         return False
 
-def extract_area_logic(text, is_carpet_type=False):
-    if pd.isna(text) or text == "": return 0.0
-    
-    # 1. CLEANUP & FIX: Standardize whitespace and common typos
+# --- SHARED UNIT PATTERNS ---
+M_UNIT = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*(?:कारपेट|कार्पेट|चटई क्षेत्र))?(?:\s*(?:एरिया|area|क्षेत्र))?'
+F_UNIT = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फु[टत]?|चौ[\.\s]*फू[टत]?|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*(?:area|क्षेत्र))?'
+
+def _clean_number_text(text):
     text = " ".join(str(text).split())
     text = re.sub(r'म्हणज[च]े', 'म्हणजे', text)
     text = re.sub(r'(\d+)\.\.(\d+)', r'\1.\2', text)
     text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
     text = re.sub(r'(\d+\.\d+)\.', r'\1', text)
-    text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text) 
-    text = re.sub(r'(\d),(\d)', r'\1\2', text) 
+    text = re.sub(r'(\d+\.?)\s+(\d+)', r'\1\2', text)
+    text = re.sub(r'(\d),(\d)', r'\1\2', text)
+    return text
+
+def extract_area_logic(text, is_carpet_type=False):
+    """
+    is_carpet_type=True means the row's resolved 'Area Type' is pure 'Carpet'
+    (not 'Usable Carpet'). In that case, balcony/utility/terrace/enclosed/open
+    values found in the description are added on top of the base area with no
+    size restriction. For everything else (Usable Carpet, blank/unresolved),
+    behavior is byte-for-byte identical to the original logic.
+    """
+    if pd.isna(text) or text == "": return 0.0
+
+    # 1. CLEANUP & FIX: Standardize whitespace and common typos
+    text = _clean_number_text(text)
     text = re.sub(r'\d+\.?\d*\s*[\*x]\s*\d+\.?\d*', 'PARKING_DIM', text)
 
-    # 2. UNIT PATTERNS: Enhanced to catch "Chatai Kshetra" and variations
-    m_unit = r'(?:चौरस\s*मी(?:[टत]र)?|चौ[\.\s]*मी[\.\s]*|चाै[\.\s]*मी[\.\s]*|sq\.?\s*m(?:tr)?\.?|square\s*meter(?:s)?)(?:\s*(?:कारपेट|कार्पेट|चटई क्षेत्र))?(?:\s*(?:एरिया|area|क्षेत्र))?'
-    f_unit = r'(?:चौरस\s*फु[टत]|चौरस\s*फू[टत]|चौ[\.\s]*फु[टत]?|चौ[\.\s]*फू[टत]?|sq\.?\s*f(?:t)?\.?|square\s*f(?:ee|oo)t)(?:\s*(?:area|क्षेत्र))?'
-    
+    # 2. UNIT PATTERNS
+    m_unit = M_UNIT
+    f_unit = F_UNIT
+
     # 3. FOCUS LOGIC: isolate unit details from land stats
-    # Added "सेक्टर" and "क्लस्टर" as boundary markers
     boundary_keywords = r'(?:येथील|मिळकतीवर|मिळकतीवरील|बांधण्यात|बांधत|प्रकल्पातील|गृहप्रकल्पातील|इमारतप्रकल्पातील|योजनेतील|नियोजित|इमारतीमधील|बिल्डींग|बिल्डिंग|प्रकल्प|टावर|टॉवर|प्रिस्टीन|सेक्टर|क्लस्टर)'
     parts = re.split(boundary_keywords, text, flags=re.IGNORECASE)
     relevant_text = " ".join(parts[1:]) if len(parts) > 1 else text
 
-    # UPDATED: Removed "एकूण क्षेत्र" from exclusions to capture flat totals
     exclude_keywords = ["पार्किंग", "पार्कींग", "parking", "road", "reserve", "राखीव", "प्लॉट", "plot", "वाढीव", "पैकी", "अविभक्त", "साईज", "size", "बिल्डअप", "मुल्यांकन", "दर", "rate", "७/१२", "नाकाश"]
 
     # Keywords identifying balcony / utility / terrace / enclosed / open area components
     component_keywords = ["बाल्कनी", "balcony", "युटिलिटी", "utility", "टेरेस", "terrace", "लगतचे", "ओपन", "open", "enclosed", "बंदिस्त"]
-    
+
     # 4. METRIC SUMMATION
     m_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s?{m_unit}', relevant_text, re.IGNORECASE):
@@ -88,50 +101,46 @@ def extract_area_logic(text, is_carpet_type=False):
         context_before = relevant_text[max(0, start_idx-60):start_idx].lower()
         bracket_context = relevant_text[max(0, start_idx-150):start_idx]
         is_rera_duplicate = "(" in bracket_context and "रेरा" in bracket_context and ")" not in bracket_context
-        
+
         if not any(word in context_before for word in exclude_keywords):
             if is_carpet_type:
-                # When Area Type is Carpet, add balcony/utility/terrace/enclosed/open
-                # components regardless of their magnitude (size filter is ignored).
+                # Area Type = Carpet: balcony/utility/terrace/enclosed/open
+                # components are added regardless of magnitude (size filter ignored).
                 is_small_component = any(kw in context_before for kw in component_keywords)
             else:
+                # Unchanged original behavior for Usable Carpet / blank rows.
                 is_small_component = 0.5 <= val < 2.0 and any(
                     kw in context_before for kw in component_keywords
                 )
             if (2.0 <= val < 900 or is_small_component) and not is_rera_duplicate:
                 if not m_vals or val != m_vals[-1]:
                     m_vals.append(val)
-            
+
     if m_vals:
-        # Cross-check if any value is the stated total of others
         if len(m_vals) > 1:
             for i in range(1, len(m_vals)):
                 if abs(m_vals[i] - sum(m_vals[:i])) < 1.0:
                     return round(m_vals[i], 3)
         return round(sum(m_vals), 3)
 
-    # 5. IMPERIAL SUMMATION FALLBACK
+    # 5. IMPERIAL SUMMATION FALLBACK (unchanged — balcony addition is scoped to sq.m only)
     f_vals = []
     for match in re.finditer(rf'(\d+\.?\d*)\s?{f_unit}', relevant_text, re.IGNORECASE):
         val = float(match.group(1))
         start_idx = match.start()
         context_before = relevant_text[max(0, match.start()-60):start_idx].lower()
         if not any(word in context_before for word in exclude_keywords):
-            if is_carpet_type:
-                is_small_component = any(kw in context_before for kw in component_keywords)
-            else:
-                is_small_component = False
-            if (20.0 <= val < 9000) or is_small_component:
+            if 20.0 <= val < 9000:
                 if not f_vals or val != f_vals[-1]:
                     f_vals.append(val)
-                
+
     if f_vals:
         if len(f_vals) > 1:
             for i in range(1, len(f_vals)):
                 if abs(f_vals[i] - sum(f_vals[:i])) < 5.0:
                     return round(f_vals[i] / 10.764, 3)
         return round(sum(f_vals) / 10.764, 3)
-        
+
     return 0.0
 
 def normalize_area_type(val):
@@ -155,9 +164,11 @@ def normalize_area_type(val):
 
 def resolve_area_types(df, area_type_col, prop_col):
     """
-    Returns a Series (aligned to df.index) of resolved area types.
-    For blank Area Type cells, fills in the most frequently occurring
-    non-blank Area Type value for that Property.
+    Returns a Series (aligned to df.index) of resolved area types:
+    'carpet', 'usable_carpet', or ''.
+    For blank Area Type cells, fills in the MOST FREQUENTLY occurring
+    non-blank Area Type value for that Property. Existing non-blank
+    values are left untouched.
     """
     if not area_type_col:
         return pd.Series([''] * len(df), index=df.index)
@@ -253,7 +264,7 @@ if uploaded_file:
     prop_col = clean_cols.get('property')
     date_col = clean_cols.get('completion date')
     loc_col = clean_cols.get('micromarket')
-    area_type_col = clean_cols.get('area type')
+    area_type_col = clean_cols.get('area type')  # optional column
     
     if desc_col and cons_col and prop_col and date_col and loc_col:
         with st.spinner('Calculating...'):
