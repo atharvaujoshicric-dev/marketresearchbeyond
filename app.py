@@ -171,11 +171,24 @@ EXCLUDE_KEYWORDS = [
 
 CONTEXT_WINDOW = 45  # characters looked at before a matched number
 
+# Descriptions frequently restate the SAME figure in both units, e.g.
+# "13.34 चौ.मी. म्हणजेच 143 चौ.फुट" ("i.e. 143 sq.ft"). Without stripping
+# the restatement, both numbers would be picked up and summed, doubling
+# that component. This removes the "म्हणजेच <value> <unit>" restatement,
+# keeping only the first-stated figure.
+
+
+
+_DEDUP_RESTATEMENT = re.compile(
+    rf"म्हणजे[च]?\s*\d+\.?\d*\s*(?:{M_UNIT}|{F_UNIT})", re.IGNORECASE
+)
+
 
 def _clean_text(text):
     text = " ".join(str(text).split())
     text = re.sub(r"(\d+)\s*\.\s*(\d+)", r"\1.\2", text)   # fix "12 . 5" -> "12.5"
     text = re.sub(r"(\d),(\d)", r"\1\2", text)             # fix "1,250" -> "1250"
+    text = _DEDUP_RESTATEMENT.sub("", text)                # drop unit-restatement duplicates
     return text
 
 
