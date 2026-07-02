@@ -244,12 +244,16 @@ def determine_config(carpet_sqft, t1, t2, t3):
 BAND_COLORS = ["A2D2FF", "FFD6A5", "CAFFBF", "FDFFB6", "FFADAD", "BDB2FF", "9BF6FF"]
 
 
-def write_formatted_sheet(df, writer, sheet_name, band_columns=None):
+def write_formatted_sheet(df, writer, sheet_name, band_columns=None, merge_last_col=False):
     """
     Write df to sheet_name with a frozen header row, centered/wrapped text,
     and (if band_columns is given) alternating background bands + merged
-    cells whenever the value in band_columns[0]/[1] changes, mirroring how
-    the Summary sheet groups rows visually by Location / Property.
+    cells whenever the value in band_columns[1] (the "group by" column,
+    e.g. Property) changes. band_columns[0] (e.g. Location) is merged
+    whenever ITS value changes. If merge_last_col is True, the last column
+    (e.g. Total Count) is also merged in lockstep with band_columns[1],
+    since it holds one repeated value per group -- mirrors the original
+    dashboard's Summary-sheet formatting.
     """
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     ws = writer.sheets[sheet_name]
@@ -270,7 +274,13 @@ def write_formatted_sheet(df, writer, sheet_name, band_columns=None):
     if not band_columns:
         return
 
-    last_col = n_cols
+    # Resolve column positions by NAME rather than assuming fixed indexes,
+    # so this keeps working if the Summary column order ever changes.
+    loc_col_idx0 = df.columns.get_loc(band_columns[0])   # 0-based
+    prop_col_idx0 = df.columns.get_loc(band_columns[1])  # 0-based
+    loc_col_excel = loc_col_idx0 + 1
+    prop_col_excel = prop_col_idx0 + 1
+    last_col_excel = n_cols
 
     def cell_val(row_idx_0based, col_idx_0based):
         return df.iloc[row_idx_0based, col_idx_0based] if 0 <= row_idx_0based < len(df) else None
@@ -280,26 +290,31 @@ def write_formatted_sheet(df, writer, sheet_name, band_columns=None):
     loc_start = 2
     for excel_row in range(2, len(df) + 3):
         i0 = excel_row - 2  # 0-based row index into df for this excel row
-        curr_prop = cell_val(i0, 1)
-        prev_prop = cell_val(i0 - 1, 1)
-        curr_loc = cell_val(i0, 0)
-        prev_loc = cell_val(i0 - 1, 0)
+        curr_prop = cell_val(i0, prop_col_idx0)
+        prev_prop = cell_val(i0 - 1, prop_col_idx0)
+        curr_loc = cell_val(i0, loc_col_idx0)
+        prev_loc = cell_val(i0 - 1, loc_col_idx0)
 
         if curr_prop != prev_prop and excel_row > 2:
             fill = PatternFill(start_color=BAND_COLORS[color_i % len(BAND_COLORS)],
                                 end_color=BAND_COLORS[color_i % len(BAND_COLORS)],
                                 fill_type="solid")
             for r in range(prop_start, excel_row):
-                for c in range(2, last_col + 1):
+                for c in range(prop_col_excel, last_col_excel + 1):
                     ws.cell(row=r, column=c).fill = fill
             if excel_row - 1 > prop_start:
-                ws.merge_cells(start_row=prop_start, start_column=2, end_row=excel_row - 1, end_column=2)
+                ws.merge_cells(start_row=prop_start, start_column=prop_col_excel,
+                                end_row=excel_row - 1, end_column=prop_col_excel)
+                if merge_last_col and last_col_excel != prop_col_excel:
+                    ws.merge_cells(start_row=prop_start, start_column=last_col_excel,
+                                    end_row=excel_row - 1, end_column=last_col_excel)
             prop_start = excel_row
             color_i += 1
 
         if curr_loc != prev_loc and excel_row > 2:
             if excel_row - 1 > loc_start:
-                ws.merge_cells(start_row=loc_start, start_column=1, end_row=excel_row - 1, end_column=1)
+                ws.merge_cells(start_row=loc_start, start_column=loc_col_excel,
+                                end_row=excel_row - 1, end_column=loc_col_excel)
             loc_start = excel_row
 
 
@@ -332,22 +347,57 @@ if uploaded_file:
         df = pd.read_excel(xls, sheet_name=target_sheet)
 
     clean_cols = {c.lower().strip(): c for c in df.columns}
-    area_col = clean_cols.get("area")
-    area_type_col = clean_cols.get("area type")
-    prop_col = clean_cols.get("property")
-    desc_col = clean_cols.get("property description")
-    cons_col = clean_cols.get("consideration value")
-    loc_col = clean_cols.get("micromarket")
-    date_col = clean_cols.get("completion date")
+    # --- Flexible column detection: different exports name things differently ---
+    FIELD_ALIASES = {
+        "area": ["area", "carpet area", "area sqft", "area (sqft)", "area sq.ft", "area (sq.ft)"],
+        "area_type": ["area type", "areatype", "carpet type", "area_type"],
+        "property": ["property", "property name", "project", "project name"],
+        "description": ["property description", "description", "property desc"],
+        "consideration": ["consideration value", "consideration", "sale value", "sale price", "agreement value"],
+        "location": ["micromarket", "location", "submarket", "city"],
+        "date": ["completion date", "completion", "possession date", "rera completion date"],
+    }
 
-    required = {"Area": area_col, "Area Type": area_type_col, "Property": prop_col,
-                "Property Description": desc_col, "Consideration Value": cons_col,
-                "Micromarket": loc_col}
+    def find_column(aliases):
+        for alias in aliases:
+            if alias in clean_cols:
+                return clean_cols[alias]
+        return None
+
+    area_col = find_column(FIELD_ALIASES["area"])
+    area_type_col = find_column(FIELD_ALIASES["area_type"])   # optional
+    prop_col = find_column(FIELD_ALIASES["property"])
+    desc_col = find_column(FIELD_ALIASES["description"])
+    cons_col = find_column(FIELD_ALIASES["consideration"])
+    loc_col = find_column(FIELD_ALIASES["location"])          # optional
+    date_col = find_column(FIELD_ALIASES["date"])             # optional
+
+    # These four are the only truly load-bearing columns; Area Type,
+    # Micromarket/Location and Completion Date are handled gracefully
+    # if a differently-shaped sheet doesn't have them.
+    required = {"Area": area_col, "Property": prop_col,
+                "Property Description": desc_col, "Consideration Value": cons_col}
     missing = [name for name, col in required.items() if col is None]
+
+    if area_type_col is None:
+        st.info("No 'Area Type' column found — treating all rows as blank Area Type "
+                "(no balcony/utility area will be added).")
+    if loc_col is None:
+        st.info("No 'Micromarket'/'Location' column found — grouping the Summary sheet "
+                "under a single 'All' location.")
 
     if missing:
         st.error(f"Missing required column(s): {', '.join(missing)}")
     else:
+        # Synthesize the optional columns so the rest of the pipeline can
+        # treat them uniformly regardless of what the uploaded sheet had.
+        if area_type_col is None:
+            area_type_col = "__Area Type__"
+            df[area_type_col] = ""
+        if loc_col is None:
+            loc_col = "__Location__"
+            df[loc_col] = "All"
+
         st.sidebar.header("BHK Thresholds (Carpet Area, SQ.FT)")
         t1 = st.sidebar.number_input("1 BHK Threshold (< )", value=600)
         t2 = st.sidebar.number_input("2 BHK Threshold (< )", value=850)
@@ -423,7 +473,8 @@ if uploaded_file:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 write_formatted_sheet(df, writer, "Raw Data", band_columns=None)
-                write_formatted_sheet(summary, writer, "Summary", band_columns=["Location", "Property"])
+                write_formatted_sheet(summary, writer, "Summary", band_columns=["Location", "Property"],
+                                       merge_last_col=True)
 
         st.success("Analysis Complete!")
         st.dataframe(summary, use_container_width=True)
