@@ -60,6 +60,24 @@ except Exception:
 SENDER_NAME = "Spydarr Market Research"
 
 
+def build_report_filename(summary_df):
+    """
+    Build a filename containing all unique micromarket/location names,
+    e.g., 'Wakad, Punawale Spydarr Market Research.xlsx'.
+    """
+    locations = [
+        str(loc).strip()
+        for loc in summary_df["Location"].dropna().unique()
+        if str(loc).strip() and str(loc).strip().lower() not in ("all", "nan", "none")
+    ]
+    if locations:
+        loc_prefix = ", ".join(locations)
+        # Strip characters illegal in Windows/macOS/Linux filenames
+        loc_prefix = re.sub(r'[\\/*?:"<>|]', "", loc_prefix).strip()
+        return f"{loc_prefix} Spydarr Market Research.xlsx"
+    return "Spydarr Market Research.xlsx"
+
+
 def send_email(recipient_email, excel_bytes, filename):
     """Send the generated workbook as an email attachment."""
     try:
@@ -84,7 +102,8 @@ Atharva Joshi"""
         part = MIMEBase("application", "octet-stream")
         part.set_payload(excel_bytes)
         encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={filename}")
+        # Quote filename in Content-Disposition so spaces/commas are preserved properly
+        part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
         msg.attach(part)
 
         server = smtplib.SMTP("smtp.gmail.com", 587)
@@ -492,8 +511,9 @@ if uploaded_file:
         st.dataframe(summary, use_container_width=True)
 
         st.divider()
+        report_filename = build_report_filename(summary)
         recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
         if st.button("Send to Email") and recipient:
             full_email = f"{recipient.strip().lower()}@beyondwalls.com"
-            if send_email(full_email, output.getvalue(), "Spydarr_Market_Report.xlsx"):
-                st.success(f"Report sent to {full_email}")
+            if send_email(full_email, output.getvalue(), report_filename):
+                st.success(f"Report ({report_filename}) sent to {full_email}")
