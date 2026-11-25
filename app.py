@@ -99,6 +99,21 @@ Atharva Joshi"""
 
 
 # =========================================================================
+# NUMERIC SANITIZATION
+# =========================================================================
+def clean_numeric_series(series):
+    """Strip commas, currency symbols, and whitespace before converting to float."""
+    if pd.api.types.is_numeric_dtype(series):
+        return series.fillna(0.0).astype(float)
+    cleaned = (
+        series.astype(str)
+        .str.replace(r"[,\s₹$]", "", regex=True)
+        .str.strip()
+    )
+    return pd.to_numeric(cleaned, errors="coerce").fillna(0.0)
+
+
+# =========================================================================
 # AREA-TYPE RESOLUTION
 # =========================================================================
 def normalize_area_type(val):
@@ -176,9 +191,6 @@ CONTEXT_WINDOW = 45  # characters looked at before a matched number
 # the restatement, both numbers would be picked up and summed, doubling
 # that component. This removes the "म्हणजेच <value> <unit>" restatement,
 # keeping only the first-stated figure.
-
-
-
 _DEDUP_RESTATEMENT = re.compile(
     rf"म्हणजे[च]?\s*\d+\.?\d*\s*(?:{M_UNIT}|{F_UNIT})", re.IGNORECASE
 )
@@ -407,8 +419,8 @@ if uploaded_file:
         )
 
         with st.spinner("Calculating..."):
-            df[area_col] = pd.to_numeric(df[area_col], errors="coerce").fillna(0.0)
-            df[cons_col] = pd.to_numeric(df[cons_col], errors="coerce").fillna(0.0)
+            df[area_col] = clean_numeric_series(df[area_col])
+            df[cons_col] = clean_numeric_series(df[cons_col])
 
             resolved_type = resolve_area_types(df, area_type_col, prop_col)
 
@@ -478,7 +490,6 @@ if uploaded_file:
 
         st.success("Analysis Complete!")
         st.dataframe(summary, use_container_width=True)
-
 
         st.divider()
         recipient = st.text_input("Recipient Name", placeholder="firstname.lastname")
